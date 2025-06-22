@@ -1,0 +1,52 @@
+# Python cache and bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Jupyter and notebook checkpoints
+.ipynb_checkpoints/
+
+# VSCode settings
+.vscode/
+
+# Environment and dependency files
+.env
+.venv/
+venv/
+ENV/
+
+# Model and training outputs
+*.npz
+*.h5
+*.pth
+*.ckpt
+
+# Logs and temp
+*.log
+*.tmp
+*.bak
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# User data
+*.swp
+*.swo
+
+# Ignore requirements lock if generated
+poetry.lock
+Pipfile.lock
+
+# Ignore test outputs
+htmlcov/
+coverage.xml
+.cache/
+
+# Ignore generated Q&S/README if needed
+Q&S.md.bak
+README.md.bak
+Q&S.md
+ai_model.npz
+RLTechReport.md
