@@ -2,22 +2,6 @@
 
 [中文 | English | Français | Español]
 
-## Update Log & Fixes (2025-06-22)
-
-### Major Fixes
-- Fixed AIPlayer.select_action polluting the main Game singleton; all simulations now use clone/deepcopy, fully isolating AI simulation from the main process.
-- AIPlayer.clone now deep-copies queen_bee_position and other attributes to prevent reference pollution, ensuring AI simulation and main process state are isolated.
-- Unified Player/AIPlayer piece_count key type to int; all operations force int, eliminating inventory reset bugs due to type mismatch.
-- main.py/game.py and main process logic for player object recreation, turn switching, and inventory display are improved; human-vs-AI and human-vs-human are robust.
-- All bug history, causes, and before/after code are documented in Q&S.md.
-
-### Verification
-- After multiple human-vs-AI tests, piece inventory remains correct after turn 2 and beyond; main process objects are not polluted by AI simulation.
-- Supports base and DLC pieces; both AI and human can place/move pieces and win/lose normally.
-
-### Suggestions
-- If new bugs occur, first check clone/deepcopy/local simulation isolation.
-- See Q&S.md for detailed technical issues and fixes; contributions welcome.
 
 ## Project Overview
 This project is a Python implementation of Hive, supporting human vs human, human vs AI, AI training, and evaluation. It supports base and DLC pieces, with full board logic, player management, AI decision-making, and neural network training.
