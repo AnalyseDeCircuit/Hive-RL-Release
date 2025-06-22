@@ -2,7 +2,6 @@
 
 [中文 | English | Français | Español]
 
-
 ## Project Overview
 This project is a Python implementation of Hive, supporting human vs human, human vs AI, AI training, and evaluation. It supports base and DLC pieces, with full board logic, player management, AI decision-making, and neural network training.
 
