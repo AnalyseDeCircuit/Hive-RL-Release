@@ -2,22 +2,6 @@
 
 [中文 | English | Français | Español]
 
-## Registro de actualizaciones y correcciones (2025-06-22)
-
-### Correcciones principales
-- Corregido que AIPlayer.select_action contaminaba el singleton Game: todas las simulaciones ahora usan clone/copia profunda, aislando totalmente la simulación IA del proceso principal.
-- El método clone de AIPlayer ahora copia profundamente queen_bee_position y otros atributos para evitar contaminación de referencias, garantizando la separación de estados IA y principal.
-- Unificación del tipo de clave piece_count (int) para Player/AIPlayer; todas las operaciones fuerzan int, eliminando bugs de inventario por tipos.
-- main.py/game.py y la lógica principal de recreación de jugadores, cambio de turno y visualización de inventario son robustos para todos los modos.
-- Todos los bugs, causas y correcciones están documentados en Q&S.md.
-
-### Verificación
-- Tras múltiples pruebas humano-vs-IA, el inventario de piezas permanece correcto tras el segundo turno y posteriores; los objetos del proceso principal no se contaminan por la simulación IA.
-- Soporta piezas base y DLC; tanto IA como humano pueden colocar/mover/ganar/perder normalmente.
-
-### Sugerencias
-- Si aparecen nuevos bugs, revisa primero el aislamiento clone/copia profunda/simulación local.
-- Consulta Q&S.md para detalles técnicos y correcciones; ¡contribuciones bienvenidas!
 
 ## Descripción del proyecto
 Este proyecto es una implementación en Python de Hive, compatible con humano vs humano, humano vs IA, entrenamiento y evaluación IA. Soporta piezas base y DLC, con lógica completa, gestión de jugadores, IA y entrenamiento de red neuronal.
