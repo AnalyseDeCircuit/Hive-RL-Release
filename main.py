@@ -6,6 +6,7 @@ from ai_player import AIPlayer
 from ai_trainer import AITrainer
 from ai_evaluator import AIEvaluator
 import os
+import glob
 
 def clear_screen():
     os.system("cls" if os.name == "nt" else "clear")
@@ -264,8 +265,9 @@ def game_loop(game: Game):
             input("\nPress Enter to continue...")
             exit_game_loop = True
 
+
 def select_model():
-    import glob
+    
     model_files = glob.glob("models/*/*.npz")
     if not model_files:
         print("未找到任何模型文件，AI将随机下棋。")
@@ -310,6 +312,7 @@ def ai_training_loop():
     print("\n--- AI Training ---")
     trainer = AITrainer()
     num_episodes = int(input("Enter number of training episodes (e.g., 1000): "))
+    # 启用多进程采样
     trainer.train(num_episodes=num_episodes)
     input("\nAI training complete. Press Enter to return to main menu...")
 

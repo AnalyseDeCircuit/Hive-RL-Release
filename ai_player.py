@@ -8,12 +8,13 @@
 
 import random
 import numpy as np
+import torch
 from player import Player
 from game import Game
 from board import ChessBoard
 from piece import PieceType
 from hive_env import Action # Re-use the Action helper from hive_env
-from neural_network import NeuralNetwork # Import the NeuralNetwork class
+from neural_network_torch import NeuralNetwork # 替换为PyTorch实现
 from utils import BOARD_SIZE, PIECE_TYPE_LIST, PIECE_TYPE_ID_MAP, PIECE_TYPE_NAME_LIST
 
 class AIPlayer(Player):
@@ -22,10 +23,10 @@ class AIPlayer(Player):
         self.epsilon = epsilon
         self.learning_rate = learning_rate
         self.discount_factor = discount_factor
-        
-        # Initialize Neural Network (input_dim=814, hidden_dim=256, output_dim=1 for state value estimation)
+        # PyTorch神经网络
         self.neural_network = NeuralNetwork(input_dim=814, hidden_dim=256, output_dim=1)
-        
+        self.optimizer = torch.optim.Adam(self.neural_network.parameters(), lr=self.learning_rate)
+
         # Experience Replay Buffer
         self.replay_buffer = []
         self.max_buffer_size = 10000 # As per report
@@ -336,19 +337,20 @@ class AIPlayer(Player):
 
     def train_on_batch(self, batch_size=32):
         if len(self.replay_buffer) < batch_size:
-            return # Not enough experiences to train
-
+            return
         batch = random.sample(self.replay_buffer, batch_size)
-
-        for state, action, reward, next_state, terminated in batch:
-            target_value = reward
+        states = np.stack([s for s,_,_,_,_ in batch])
+        targets = []
+        for _,_,reward,next_state,terminated in batch:
+            target = reward
             if not terminated:
-                # Predict value of next state
-                next_state_value = self.neural_network.forward(next_state)
-                target_value += self.discount_factor * next_state_value
-            
-            # Train the neural network
-            self.neural_network.train(state, target_value, self.learning_rate)
+                with torch.no_grad():
+                    next_state_value = self.neural_network.forward(next_state).item()
+                target += self.discount_factor * next_state_value
+            targets.append(target)
+        targets = np.array(targets, dtype=np.float32)
+        loss = self.neural_network.train_step(states, targets, self.optimizer)
+        return loss
 
     def clone(self):
         # 返回AIPlayer实例，保留所有AI参数和piece_count，深拷贝 queen_bee_position，避免引用污染

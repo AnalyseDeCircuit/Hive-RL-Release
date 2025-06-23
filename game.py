@@ -31,7 +31,7 @@ class Game:
         self.is_game_over = False
         self.turn_count = 1
         self.board.clear_board()
-        print(f"Game initialized. {self.player1.get_name()} starts.")
+        # print(f"Game initialized. {self.player1.get_name()} starts.")
 
     def restart_game(self):
         if self.player1 and self.player2:

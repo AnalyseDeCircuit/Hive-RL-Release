@@ -6,6 +6,8 @@ from game import Game
 from board import ChessBoard
 import os
 import datetime
+import multiprocessing as mp
+from parallel_sampler import worker_process
 
 class AITrainer:
     def __init__(self, model_path=None):
@@ -24,9 +26,22 @@ class AITrainer:
         self.player1_ai = AIPlayer("AI_Player1", is_first_player=True, epsilon=1.0)
         self.player2_ai = AIPlayer("AI_Player2", is_first_player=False, epsilon=1.0)
 
-    def train(self, num_episodes=1000, epsilon_decay=0.995, min_epsilon=0.01, batch_size=32):
+    def train(self, num_episodes=1000, epsilon_decay=0.995, min_epsilon=0.01, batch_size=16, num_workers=2):
         print("Starting AI training...")
         average_rewards = []  # 新增：用于统计每局reward
+        # 多进程采样worker支持
+        workers = []
+        queue = None
+        if num_workers and num_workers > 0:
+            import multiprocessing as mp
+            from parallel_sampler import worker_process
+            queue = mp.Queue(maxsize=32)
+            player_args = dict(name='AI_Parallel', is_first_player=True)
+            env_args = dict(training_mode=True)
+            workers = [mp.Process(target=worker_process, args=(queue, player_args, env_args)) for _ in range(num_workers)]
+            for w in workers:
+                w.daemon = True
+                w.start()
         for episode in range(num_episodes):
             observation, info = self.env.reset()
             terminated = False
@@ -77,61 +92,44 @@ class AITrainer:
                         info = {'reason': 'no_legal_action'}
                         current_player_obj.add_experience(observation, action, reward, next_observation, terminated)
                         break
-
-                # step保险：捕获非法动作异常，直接惩罚并终止，不自动兜底
                 try:
                     next_observation, reward, terminated, truncated, info = self.env.step(action)
                 except Exception as e:
-                    print(f"Error during step: {e}")
+                    print(f"[ERROR] step异常: {e}")
                     reward = -1.0
                     terminated = True
                     truncated = False
                     next_observation = observation
                     info = {'reason': str(e)}
                 episode_reward += reward
-
-                # 调试输出每步 reward
-                #print(f"Step: action={action}, reward={reward}, terminated={terminated}, truncated={truncated}")
-
-                # Add experience to replay buffer for both players (if applicable, for self-play)
-                # For self-play, both agents learn from the same experiences, but from their own perspective.
-                # The report implies a single agent learning, so we'll add experience to the current player's buffer.
-                
                 current_player_obj.add_experience(observation, action, reward, next_observation, terminated)
-
-                # Train the AI player
                 current_player_obj.train_on_batch(batch_size)
-
                 observation = next_observation
-
-            # Decay epsilon
             self.player1_ai.epsilon = max(min_epsilon, self.player1_ai.epsilon * epsilon_decay)
             self.player2_ai.epsilon = max(min_epsilon, self.player2_ai.epsilon * epsilon_decay)
-
-            # 动态调整epsilon，训练后期逐步降低探索率
             if episode % 100 == 0 and self.player1_ai.epsilon > 0.1:
                 self.player1_ai.epsilon *= 0.95
             if episode % 100 == 0 and self.player2_ai.epsilon > 0.1:
                 self.player2_ai.epsilon *= 0.95
-
             average_rewards.append(episode_reward)
+            print(f"Episode {episode+1}/{num_episodes}, Reward: {episode_reward:.2f}, Epsilon: {self.player1_ai.epsilon:.4f}")
             # 每100局输出最近100局平均reward
             if (episode + 1) % 100 == 0:
                 avg_reward = np.mean(average_rewards[-100:])
                 print(f"\033[93m[统计] 最近100局平均Reward: {avg_reward:.2f}\033[0m")
-
-            print(f"\033[96mEpisode {episode + 1}/{num_episodes}, Reward: {episode_reward}, Epsilon: {self.player1_ai.epsilon:.2f}\033[0m")
-
-            # Save model periodically
+            # 只保留模型保存提示
             if (episode + 1) % 100 == 0:
                 model_file = os.path.join(self.model_dir, f"{self.run_prefix}_ep{episode+1}.npz")
                 self.player1_ai.neural_network.save_model(model_file)
                 print(f"Model saved after {episode + 1} episodes: {model_file}")
-        # 训练结束后保存reward曲线
+        if workers:
+            for w in workers:
+                w.terminate()
+            for w in workers:
+                w.join()
         reward_file = os.path.join(self.model_dir, f"{self.run_prefix}_reward_history.npy")
         np.save(reward_file, np.array(average_rewards))
         print(f"AI training finished. Reward history saved to {reward_file}")
-        # 最终模型
         final_model_file = os.path.join(self.model_dir, f"{self.run_prefix}_final.npz")
         self.player1_ai.neural_network.save_model(final_model_file)
         print(f"Final model saved to {final_model_file}")

@@ -1,3 +1,7 @@
 stable-baselines3[extra]
 gymnasium
+numpy
+torch
+matplotlib
+# 其它依赖可根据实际需要补充
 
