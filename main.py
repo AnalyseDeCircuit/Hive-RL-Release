@@ -53,12 +53,10 @@ def game_loop(game: Game):
             if isinstance(current_player, AIPlayer):
                 print(f"{current_player.get_name()} is thinking...")
                 current_player_idx = 0 if current_player == game.player1 else 1
-                # 低耦合：AIPlayer用自身动作生成逻辑（不依赖env），但加debug
-                action = current_player.select_action(None, game, game.board, current_player_idx)
+                action = current_player.select_action(None, game, game.board, current_player_idx, debug=False)
                 # 如果AI无动作且蜂后未落，强制生成一个放蜂后动作
                 if action is None and not getattr(current_player, 'is_queen_bee_placed', False):
                     print("[DEBUG] AI保险：无动作且蜂后未落，强制生成放蜂后动作 (0,0)")
-                    # queen bee一般为0号
                     action = Action.encode_place_action(0, 0, 0)
                 if action is None:
                     # debug输出当前可落子空格数
@@ -88,35 +86,84 @@ def game_loop(game: Game):
                     if action_type == 'place' and isinstance(piece_type_id, int) and 0 <= piece_type_id < len(PIECE_TYPE_NAME_LIST):
                         piece_type = getattr(PieceType, PIECE_TYPE_NAME_LIST[piece_type_id])
                         print(f"AI places {getattr(piece_type, 'name', str(piece_type))} at ({to_x}, {to_y})")
-                        if all(isinstance(v, int) for v in (to_x, to_y)) and hasattr(current_player, 'place_piece'):
-                            safe_piece_type = getattr(piece_type, 'value', piece_type)
-                            if not isinstance(safe_piece_type, int):
-                                try:
-                                    safe_piece_type = int(safe_piece_type)
-                                except Exception:
-                                    safe_piece_type = 0
-                            current_player.place_piece(game.board, to_x, to_y, safe_piece_type, game.turn_count)
-                            game.switch_player()
+                        safe_piece_type = getattr(piece_type, 'value', piece_type)
+                        if not isinstance(safe_piece_type, int):
+                            try:
+                                safe_piece_type = int(safe_piece_type)
+                            except Exception:
+                                safe_piece_type = 0
+                        if all(isinstance(v, int) and v is not None for v in (to_x, to_y, safe_piece_type)) and hasattr(current_player, 'place_piece') and current_player is not None:
+                            try:
+                                current_player.place_piece(game.board, to_x, to_y, safe_piece_type, game.turn_count)
+                                game.switch_player()
+                            except RuntimeError as e:
+                                msg = str(e)
+                                if ("QueenBee must be placed before moving other pieces" in msg or
+                                    "Queen Bee must be placed by the fourth turn." in msg or
+                                    "must_place_queen_violation" in msg or
+                                    (not getattr(current_player, 'is_queen_bee_placed', False) and game.turn_count >= 3)):
+                                    print(f"[WARNING] 非法动作: {e}，强制落蜂后。")
+                                    # 强制落蜂后
+                                    placed = False
+                                    for x in range(BOARD_SIZE):
+                                        for y in range(BOARD_SIZE):
+                                            if game.board.get_piece_at(x, y) is None:
+                                                try:
+                                                    current_player.place_piece(game.board, x, y, 0, game.turn_count)
+                                                    placed = True
+                                                    game.switch_player()
+                                                    break
+                                                except Exception:
+                                                    continue
+                                        if placed:
+                                            break
+                                    if not placed:
+                                        print("[ERROR] 无法强制落蜂后，跳过回合。")
+                                else:
+                                    print(f"[ERROR] place_piece异常: {e}")
                         else:
-                            print("AI action decode error: invalid coordinates for placement or player method missing.")
-                    elif action_type == 'move' and all(isinstance(v, int) for v in (from_x, from_y, to_x, to_y)) and hasattr(current_player, 'move_piece'):
-                        if from_x is not None and from_y is not None:
-                            moved_piece = game.board.get_piece_at(from_x, from_y)
+                            print("AI action decode error: invalid coordinates/type for placement or player method missing.")
+                    elif action_type == 'move' and all(isinstance(v, int) and v is not None for v in (from_x, from_y, to_x, to_y)) and hasattr(current_player, 'move_piece') and current_player is not None:
+                        if isinstance(from_x, int) and isinstance(from_y, int):
+                            moved_piece = game.board.get_piece_at(from_x, from_y) if game.board is not None else None
                         else:
                             moved_piece = None
                         if moved_piece:
-                            safe_piece_type = getattr(moved_piece.piece_type, 'value', moved_piece.piece_type)
+                            safe_piece_type = getattr(moved_piece.piece_type, 'value', None)
                             if not isinstance(safe_piece_type, int):
-                                try:
-                                    safe_piece_type = int(safe_piece_type)
-                                except Exception:
-                                    safe_piece_type = 0
+                                safe_piece_type = 0
                             print(f"AI moves {getattr(moved_piece.piece_type, 'name', str(moved_piece.piece_type))} from ({from_x}, {from_y}) to ({to_x}, {to_y})")
-                            if all(isinstance(v, int) for v in (from_x, from_y, to_x, to_y)):
-                                current_player.move_piece(game.board, from_x, from_y, to_x, to_y, safe_piece_type)
-                                game.switch_player()
+                            if all(isinstance(v, int) and v is not None for v in (from_x, from_y, to_x, to_y, safe_piece_type)):
+                                try:
+                                    current_player.move_piece(game.board, from_x, from_y, to_x, to_y, safe_piece_type)
+                                    game.switch_player()
+                                except RuntimeError as e:
+                                    msg = str(e)
+                                    if ("QueenBee must be placed before moving other pieces" in msg or
+                                        "Queen Bee must be placed by the fourth turn." in msg or
+                                        "must_place_queen_violation" in msg or
+                                        (not getattr(current_player, 'is_queen_bee_placed', False) and game.turn_count >= 3)):
+                                        print(f"[WARNING] 非法move动作: {e}，强制落蜂后。")
+                                        # 强制落蜂后
+                                        placed = False
+                                        for x in range(BOARD_SIZE):
+                                            for y in range(BOARD_SIZE):
+                                                if game.board.get_piece_at(x, y) is None:
+                                                    try:
+                                                        current_player.place_piece(game.board, x, y, 0, game.turn_count)
+                                                        placed = True
+                                                        game.switch_player()
+                                                        break
+                                                    except Exception:
+                                                        continue
+                                            if placed:
+                                                break
+                                        if not placed:
+                                            print("[ERROR] 无法强制落蜂后，跳过回合。")
+                                    else:
+                                        print(f"[ERROR] move_piece异常: {e}")
                             else:
-                                print("AI move action decode error: invalid coordinates.")
+                                print("AI move action decode error: invalid coordinates/type.")
                         else:
                             print("AI tried to move a non-existent piece. This should not happen.")
                     else:
@@ -130,23 +177,27 @@ def game_loop(game: Game):
                         if action == 'P':
                             x, y, piece_type_str = input("Enter coordinates (x y) and piece type (0-7): ").split()
                             x, y, piece_type = int(x), int(y), int(piece_type_str)
-                            if piece_type not in PIECE_TYPE_LIST:
-                                print("Invalid piece type. Please enter a number between 0 and 4.")
+                            if piece_type not in PIECE_TYPE_LIST or not all(isinstance(v, int) for v in (x, y, piece_type)):
+                                print("Invalid piece type or coordinates. Please enter valid numbers.")
                                 continue
-                            if hasattr(current_player, 'place_piece'):
+                            if hasattr(current_player, 'place_piece') and current_player is not None:
                                 current_player.place_piece(game.board, x, y, piece_type, game.turn_count)
                                 game.switch_player()
                                 valid_input = True
                             else:
                                 print("Current player cannot place pieces.")
                         elif action == 'M':
-                            x, y, to_x, to_y = map(int, input("Enter from coordinates (x y) and to coordinates (toX toY): ").split())
+                            coords = input("Enter from coordinates (x y) and to coordinates (toX toY): ").split()
+                            if len(coords) != 4:
+                                print("Please enter exactly four numbers for coordinates.")
+                                continue
+                            x, y, to_x, to_y = map(int, coords)
                             piece_type_str = input("Enter piece type to move (0-7): ").strip()
                             piece_type = int(piece_type_str)
-                            if piece_type not in PIECE_TYPE_LIST:
-                                print("Invalid piece type. Please enter a number between 0 and 4.")
+                            if piece_type not in PIECE_TYPE_LIST or not all(isinstance(v, int) for v in (x, y, to_x, to_y, piece_type)):
+                                print("Invalid piece type or coordinates. Please enter valid numbers.")
                                 continue
-                            if hasattr(current_player, 'move_piece'):
+                            if hasattr(current_player, 'move_piece') and current_player is not None:
                                 current_player.move_piece(game.board, x, y, to_x, to_y, piece_type)
                                 game.switch_player()
                                 valid_input = True
@@ -181,6 +232,7 @@ def game_loop(game: Game):
             exit_game_loop = True
 
 def human_vs_ai_game_loop():
+    from hive_env import HiveEnv
     game = Game.get_instance()
     player1_name = input("Enter Human Player's name: ").strip()
     # 如需支持DLC，改为use_dlc=True
@@ -195,6 +247,9 @@ def human_vs_ai_game_loop():
     except FileNotFoundError:
         print("AI model not found. AI will play randomly.")
 
+    # 用HiveEnv游玩模式包装game，确保保险逻辑分离
+    env = HiveEnv(training_mode=False)
+    # 可选：如需用env驱动主循环，可在此处替换game_loop逻辑
     game.initialize_game(player1, ai_player)
     game_loop(game)
 

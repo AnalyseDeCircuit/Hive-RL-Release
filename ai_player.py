@@ -30,8 +30,8 @@ class AIPlayer(Player):
         self.replay_buffer = []
         self.max_buffer_size = 10000 # As per report
 
-    def select_action(self, env, game_state: Game, board: ChessBoard, current_player_idx: int):
-        current_state_vector = self._get_observation_from_game_state(game_state, board, current_player_idx)
+    def select_action(self, env, game_state: Game, board: ChessBoard, current_player_idx: int, debug=False):
+        current_state_vector = self._get_observation_from_game_state(game_state, board, current_player_idx, debug=debug)
         if env is not None:
             legal_actions = env.get_legal_actions()
         else:
@@ -40,10 +40,28 @@ class AIPlayer(Player):
         if not legal_actions:
             return None # No legal actions, game might be over or stuck
 
+        # ---保险逻辑增强：必须落蜂后时只允许place QueenBee---
+        current_player = game_state.player1 if current_player_idx == 0 else game_state.player2
+        must_place_queen = (game_state.turn_count == 3 and not getattr(current_player, 'is_queen_bee_placed', False))
+        if must_place_queen:
+            # 只允许place QueenBee
+            legal_actions = [a for a in legal_actions if (Action.decode_action(a)[0] == 'place' and Action.decode_action(a)[5] == 0)]
+            if not legal_actions:
+                return None
+
         # Epsilon-greedy strategy
         if random.random() < self.epsilon:
             # Explore: choose a random legal action
             action = random.choice(legal_actions)
+            # ---保险：蜂后未落时禁止move动作（无论env返回什么）---
+            if not getattr(current_player, 'is_queen_bee_placed', False):
+                legal_actions = [a for a in legal_actions if Action.decode_action(a)[0] == 'place']
+                if not legal_actions:
+                    return None
+                action_type, *_ = Action.decode_action(action)
+                if action_type != 'place':
+                    action = random.choice(legal_actions)
+            return action
         else:
             # Exploit: choose the action with the highest Q-value
             best_actions = []
@@ -51,38 +69,53 @@ class AIPlayer(Player):
 
             for action_candidate in legal_actions:
                 # 用局部变量模拟，不污染全局Game单例
-                sim_player1 = game_state.player1.clone()
-                sim_player2 = game_state.player2.clone()
-                sim_board = board.clone()
+                sim_player1 = game_state.player1.clone() if game_state.player1 is not None else None
+                sim_player2 = game_state.player2.clone() if game_state.player2 is not None else None
+                sim_board = board.clone() if board is not None else None
                 sim_turn_count = game_state.turn_count
+
+                # 如果仿真player或board为None，直接跳过该action
+                if sim_board is None or (current_player_idx == 0 and sim_player1 is None) or (current_player_idx == 1 and sim_player2 is None):
+                    continue
 
                 simulated_reward = 0.0 # Immediate reward for simulation
                 try:
                     action_type, from_x, from_y, to_x, to_y, piece_type_id = Action.decode_action(action_candidate)
+                    # 参数判空并转int
+                    from_x = int(from_x) if from_x is not None else None
+                    from_y = int(from_y) if from_y is not None else None
+                    to_x = int(to_x) if to_x is not None else None
+                    to_y = int(to_y) if to_y is not None else None
+                    piece_type_id = self.safe_piece_type_id(piece_type_id)
                     if current_player_idx == 0:
                         sim_current = sim_player1
                     else:
                         sim_current = sim_player2
+                    if sim_current is None:
+                        continue
                     # Apply action to sim_player
                     if action_type == 'place':
-                        piece_type_name = PIECE_TYPE_NAME_LIST[piece_type_id] if isinstance(piece_type_id, int) and 0 <= piece_type_id < len(PIECE_TYPE_NAME_LIST) else str(piece_type_id)
-                        piece_type = getattr(PieceType, piece_type_name)
-                        if sim_current.piece_count.get(piece_type, 0) > 0 and \
-                           sim_board.is_valid_placement(to_x, to_y, sim_current.is_first_player, sim_turn_count):
-                            sim_current.place_piece(sim_board, to_x, to_y, piece_type, sim_turn_count)
+                        # 只要有一个坐标为None就跳过
+                        if to_x is None or to_y is None or piece_type_id is None:
+                            simulated_reward = -1.0
+                        elif sim_current.piece_count.get(piece_type_id, 0) > 0 and \
+                             sim_board.is_valid_placement(to_x, to_y, getattr(sim_current, 'is_first_player', False), sim_turn_count):
+                            sim_current.place_piece(sim_board, to_x, to_y, piece_type_id, sim_turn_count)
                             simulated_reward = 0.1
                         else:
                             simulated_reward = -0.5
                     elif action_type == 'move':
-                        piece_to_move = sim_board.get_piece_at(from_x, from_y)
-                        if piece_to_move and piece_to_move.owner == sim_current and \
-                           piece_to_move.is_valid_move(sim_board, to_x, to_y):
-                            sim_current.move_piece(sim_board, from_x, from_y, to_x, to_y, piece_to_move.piece_type)
-                            simulated_reward = 0.1
+                        if from_x is None or from_y is None or to_x is None or to_y is None:
+                            simulated_reward = -1.0
                         else:
-                            simulated_reward = -0.5
+                            piece_to_move = sim_board.get_piece_at(from_x, from_y)
+                            if piece_to_move is not None and getattr(piece_to_move, 'owner', None) == sim_current and \
+                               hasattr(piece_to_move, 'is_valid_move') and piece_to_move.is_valid_move(sim_board, to_x, to_y):
+                                sim_current.move_piece(sim_board, from_x, from_y, to_x, to_y, self.safe_piece_type_id(getattr(piece_to_move, 'piece_type', None)))
+                                simulated_reward = 0.1
+                            else:
+                                simulated_reward = -0.5
                     # 检查胜负
-                    # 这里只能简单模拟，若需完整胜负判定可补充
                 except Exception:
                     simulated_reward = -1.0
 
@@ -97,21 +130,92 @@ class AIPlayer(Player):
             if not best_actions:
                 return None  # 没有可选动作，返回None，防止崩溃
             action = random.choice(best_actions)
-        # ---保险：蜂后未落时禁止move动作（无论env返回什么）---
-        current_player = game_state.player1 if current_player_idx == 0 else game_state.player2
-        if not getattr(current_player, 'is_queen_bee_placed', False):
-            # 只保留place动作
-            legal_actions = [a for a in legal_actions if Action.decode_action(a)[0] == 'place']
-            if not legal_actions:
-                return None
-            # 如果action不是place，强制随机选一个place
-            if action is not None:
+            # ---保险：蜂后未落时禁止move动作（无论env返回什么）---
+            if not getattr(current_player, 'is_queen_bee_placed', False):
+                legal_actions = [a for a in legal_actions if Action.decode_action(a)[0] == 'place']
+                if not legal_actions:
+                    return None
                 action_type, *_ = Action.decode_action(action)
                 if action_type != 'place':
                     action = random.choice(legal_actions)
+            # ---最终保险：蜂后未落时action只能是place---
+            if not getattr(current_player, 'is_queen_bee_placed', False):
+                action_type, *_ = Action.decode_action(action)
+                if action_type != 'place':
+                    # 强制只选place动作
+                    place_actions = [a for a in legal_actions if Action.decode_action(a)[0] == 'place']
+                    if place_actions:
+                        action = random.choice(place_actions)
+                    else:
+                        return None
+            # ---最终保险：must_place_queen时只能是place QueenBee---
+            if must_place_queen:
+                action_type, *_, piece_type_id = Action.decode_action(action)
+                if not (action_type == 'place' and piece_type_id == 0):
+                    queen_actions = [a for a in legal_actions if (Action.decode_action(a)[0] == 'place' and Action.decode_action(a)[5] == 0)]
+                    if queen_actions:
+                        action = random.choice(queen_actions)
+                    else:
+                        return None
+        # ---终极保险：返回前再次强制过滤，蜂后未落时绝不允许move动作---
+        if not getattr(current_player, 'is_queen_bee_placed', False):
+            action_type = Action.decode_action(action)[0]
+            if action_type != 'place':
+                # 只允许place动作
+                place_actions = [a for a in legal_actions if Action.decode_action(a)[0] == 'place']
+                if place_actions:
+                    action = random.choice(place_actions)
+                else:
+                    return None
+        # ---终极保险：必须落蜂后时只允许place QueenBee---
+        if must_place_queen:
+            action_type, *_, piece_type_id = Action.decode_action(action)
+            if not (action_type == 'place' and piece_type_id == 0):
+                queen_actions = [a for a in legal_actions if (Action.decode_action(a)[0] == 'place' and Action.decode_action(a)[5] == 0)]
+                if queen_actions:
+                    action = random.choice(queen_actions)
+                else:
+                    return None
+        # ---终极保险：蜂后未落时绝不允许move动作，must_place_queen时绝不允许非place QueenBee---
+        if not getattr(current_player, 'is_queen_bee_placed', False):
+            # 只允许place动作
+            place_actions = [a for a in legal_actions if Action.decode_action(a)[0] == 'place']
+            if not place_actions:
+                print("[AIPlayer][WARN] 蜂后未落且无place动作，AI被保险层拦截，返回None，环境应给予惩罚。")
+                return None
+            action_type = Action.decode_action(action)[0]
+            if action_type != 'place':
+                action = random.choice(place_actions)
+        if must_place_queen:
+            # 只允许place QueenBee
+            queen_actions = [a for a in legal_actions if (Action.decode_action(a)[0] == 'place' and Action.decode_action(a)[5] == 0)]
+            if not queen_actions:
+                print("[AIPlayer][WARN] must_place_queen但无QueenBee可下，AI被保险层拦截，返回None，环境应给予惩罚。")
+                return None
+            action_type, *_, piece_type_id = Action.decode_action(action)
+            if not (action_type == 'place' and piece_type_id == 0):
+                action = random.choice(queen_actions)
         return action
 
-    def _get_observation_from_game_state(self, game_state: Game, board: ChessBoard, current_player_idx: int):
+    # --- 辅助函数：兼容 PieceType/int/str 的 piece_type_id 提取 ---
+    def safe_piece_type_id(self, piece_type):
+        from piece import PieceType
+        if isinstance(piece_type, int):
+            return piece_type
+        if hasattr(piece_type, 'value'):
+            return int(piece_type.value)
+        # 兼容字符串（如 'QUEEN_BEE'）
+        if isinstance(piece_type, str):
+            try:
+                return int(getattr(PieceType, piece_type).value)
+            except Exception:
+                try:
+                    return int(piece_type)
+                except Exception:
+                    return 0
+        return int(piece_type) if piece_type is not None else 0
+
+    def _get_observation_from_game_state(self, game_state: Game, board: ChessBoard, current_player_idx: int, debug=False):
         # This method duplicates logic from HiveEnv._get_observation
         # It's a temporary solution until GameState class is fully integrated.
         
@@ -122,11 +226,9 @@ class AIPlayer(Player):
                 pieces_at_pos = board.get_pieces_at(x, y)
                 if pieces_at_pos:
                     top_piece = pieces_at_pos[-1] # Get the top piece
-                    piece_type_val = top_piece.piece_type
-                    if not isinstance(piece_type_val, int):
-                        piece_type_val = int(getattr(PieceType, str(piece_type_val), 0))
-                    piece_type_id = piece_type_val if piece_type_val in PIECE_TYPE_LIST else 0
-                    board_encoding[x, y, piece_type_id] = 1.0
+                    piece_type_id = self.safe_piece_type_id(top_piece.piece_type)
+                    if piece_type_id in PIECE_TYPE_LIST:
+                        board_encoding[x, y, piece_type_id] = 1.0
         board_encoding = board_encoding.flatten()
 
         # 2. Player hand information (10 dimensions)
@@ -150,12 +252,12 @@ class AIPlayer(Player):
         # 防御性检查，防止player1/player2为None
         if game_state.player1 is not None:
             for piece_type, count in game_state.player1.piece_count.items():
-                piece_type_id = piece_type if isinstance(piece_type, int) else int(getattr(PieceType, str(piece_type), 0))
+                piece_type_id = self.safe_piece_type_id(piece_type)
                 if piece_type_id in piece_type_map:
                     player1_hand_encoding[piece_type_map[piece_type_id]] = count / max_counts[piece_type_id]
         if game_state.player2 is not None:
             for piece_type, count in game_state.player2.piece_count.items():
-                piece_type_id = piece_type if isinstance(piece_type, int) else int(getattr(PieceType, str(piece_type), 0))
+                piece_type_id = self.safe_piece_type_id(piece_type)
                 if piece_type_id in piece_type_map:
                     player2_hand_encoding[piece_type_map[piece_type_id]] = count / max_counts[piece_type_id]
 
@@ -174,6 +276,10 @@ class AIPlayer(Player):
             player1_queen_placed_encoding,
             player2_queen_placed_encoding
         ])
+        # --- debug输出 ---
+        if debug:
+            print(f"[DEBUG][obs] sum={np.sum(observation):.4f} min={np.min(observation):.4f} max={np.max(observation):.4f} ",
+                  f"head={observation[:20]} tail={observation[-20:]}")
         return observation
 
     def _get_legal_actions_from_game_state(self, game_state: Game, board: ChessBoard, current_player_idx: int):

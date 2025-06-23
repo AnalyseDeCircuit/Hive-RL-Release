@@ -135,8 +135,7 @@ class ChessBoard:
             print(f"{x:2d} ", end="")
         print()
         for y in range(BOARD_SIZE):
-            if y % 2 == 1:
-                print("   ", end="")
+            # 去除奇数行缩进
             print(f"{y:2d} ", end="")
             for x in range(BOARD_SIZE):
                 piece = self.get_piece_at(x, y)
@@ -153,7 +152,7 @@ class ChessBoard:
                 else:
                     print(".  ", end="")
             print()
-        print("\n  y/x => 横为 x 轴，竖为 y 轴（偶数行缩进模拟六边形，蓝=玩家1，橙=玩家2）")
+        print("\n  y/x => 横为 x 轴，竖为 y 轴（所有行左对齐，蓝=玩家1，橙=玩家2）")
 
     def clear_board(self):
         self.board = [[[] for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]

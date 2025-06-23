@@ -11,7 +11,7 @@ class HiveEnv(gym.Env):
     metadata = {'render_modes': ['human'], 'render_fps': 4}
     MAX_TURNS = 200  # 新增最大步数限制
 
-    def __init__(self):
+    def __init__(self, training_mode=True):
         super(HiveEnv, self).__init__()
         self.game = Game()
         self.board = ChessBoard()
@@ -19,6 +19,7 @@ class HiveEnv(gym.Env):
         self.player2 = Player("Player2", is_ai=True)
         self.game.player1 = self.player1
         self.game.player2 = self.player2
+        self.training_mode = training_mode  # 新增：训练/游玩模式标志
 
         # Define observation space (814-dimensional vector)
         # 10x10 board with 8 piece types per cell = 800
@@ -201,21 +202,20 @@ class HiveEnv(gym.Env):
                     observation = self._get_observation()
                     return observation, reward, True, truncated, info
             elif action_type == 'move':
-                # 坐标必须全为 int
-                if not all(isinstance(v, int) for v in (from_x, from_y, to_x, to_y)):
+                # 坐标必须全为 int 且不能为 None
+                fx = int(from_x) if isinstance(from_x, int) else -1
+                fy = int(from_y) if isinstance(from_y, int) else -1
+                tx = int(to_x) if isinstance(to_x, int) else -1
+                ty = int(to_y) if isinstance(to_y, int) else -1
+                if -1 in (fx, fy, tx, ty):
                     reward = -1.0
                     observation = self._get_observation()
                     return observation, reward, True, truncated, info
-                fx, fy, tx, ty = from_x, from_y, to_x, to_y
                 piece_to_move = self.board.get_piece_at(fx, fy)
                 if piece_to_move and piece_to_move.owner == current_player:
                     if piece_to_move.is_valid_move(self.board, tx, ty):
                         pt = piece_to_move.piece_type
-                        # 只接受 int 类型，否则非法
-                        if isinstance(pt, int):
-                            pt_int = pt
-                        else:
-                            pt_int = -1
+                        pt_int = int(pt) if isinstance(pt, (int, np.integer)) else -1
                         if not isinstance(pt_int, int) or pt_int < 0:
                             reward = -1.0
                             observation = self._get_observation()
@@ -253,10 +253,38 @@ class HiveEnv(gym.Env):
                 self.current_player_idx = 1 - self.current_player_idx
                 self.turn_count += 1
         except Exception as e:
-            reward = -1.0
-            terminated = True
-            print(f"Error during step: {e}")
-
+            if self.training_mode:
+                reward = -1.0
+                terminated = True
+                print(f"Error during step: {e}")
+            else:
+                msg = str(e)
+                auto_placed = False
+                if ("QueenBee must be placed before moving other pieces" in msg or
+                    "Queen Bee must be placed by the fourth turn." in msg or
+                    "must_place_queen_violation" in msg or
+                    (not current_player.is_queen_bee_placed and self.turn_count >= 3)):
+                    print(f"[WARNING] 非法动作: {e}，强制落蜂后。")
+                    for x in range(BOARD_SIZE):
+                        for y in range(BOARD_SIZE):
+                            if self.board.get_piece_at(x, y) is None and self.board.is_valid_placement(x, y, current_player.is_first_player, self.turn_count):
+                                try:
+                                    current_player.place_piece(self.board, x, y, PieceType.QUEEN_BEE, self.turn_count)
+                                    reward = 0.0
+                                    terminated = False
+                                    auto_placed = True
+                                    break
+                                except Exception:
+                                    continue
+                        if auto_placed:
+                            break
+                    if not auto_placed:
+                        reward = -1.0
+                        terminated = True
+                else:
+                    reward = -1.0
+                    terminated = True
+                    print(f"Error during step: {e}")
         observation = self._get_observation()
         return observation, reward, terminated, truncated, info
 

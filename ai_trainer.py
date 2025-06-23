@@ -7,7 +7,7 @@ from board import ChessBoard
 
 class AITrainer:
     def __init__(self, model_path="./ai_model.npz"):
-        self.env = HiveEnv()
+        self.env = HiveEnv(training_mode=True)  # 明确指定训练模式
         self.player1_ai = AIPlayer("AI_Player1", is_first_player=True, epsilon=1.0) # Start with high exploration
         self.player2_ai = AIPlayer("AI_Player2", is_first_player=False, epsilon=1.0) # Start with high exploration
         self.model_path = model_path
