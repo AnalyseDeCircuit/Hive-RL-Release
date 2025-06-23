@@ -43,11 +43,13 @@ class AIPlayer(Player):
         # ---保险逻辑增强：必须落蜂后时只允许place QueenBee---
         current_player = game_state.player1 if current_player_idx == 0 else game_state.player2
         must_place_queen = (game_state.turn_count == 3 and not getattr(current_player, 'is_queen_bee_placed', False))
-        if must_place_queen:
-            # 只允许place QueenBee
-            legal_actions = [a for a in legal_actions if (Action.decode_action(a)[0] == 'place' and Action.decode_action(a)[5] == 0)]
-            if not legal_actions:
-                return None
+        # ---新增：前4步且蜂后未落时，优先探索放蜂后---
+        if game_state.turn_count < 4 and not getattr(current_player, 'is_queen_bee_placed', False):
+            queenbee_actions = [a for a in legal_actions if (Action.decode_action(a)[0] == 'place' and Action.decode_action(a)[5] == 0)]
+            if queenbee_actions:
+                if random.random() < self.epsilon:
+                    return random.choice(queenbee_actions)
+                # 否则后续Q值选择时也优先考虑queenbee_actions
 
         # Epsilon-greedy strategy
         if random.random() < self.epsilon:

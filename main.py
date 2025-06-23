@@ -264,25 +264,45 @@ def game_loop(game: Game):
             input("\nPress Enter to continue...")
             exit_game_loop = True
 
+def select_model():
+    import glob
+    model_files = glob.glob("models/*/*.npz")
+    if not model_files:
+        print("未找到任何模型文件，AI将随机下棋。")
+        return None
+    print("可用模型列表：")
+    for idx, file in enumerate(model_files):
+        print(f"{idx}: {file}")
+    sel = input("请输入要加载的模型编号（回车默认最新）:").strip()
+    if sel == '':
+        return model_files[-1]
+    try:
+        sel = int(sel)
+        return model_files[sel]
+    except Exception:
+        print("输入无效，使用最新模型。")
+        return model_files[-1]
+
 def human_vs_ai_game_loop():
     from hive_env import HiveEnv
     game = Game.get_instance()
     player1_name = input("Enter Human Player's name: ").strip()
-    # 如需支持DLC，改为use_dlc=True
     use_dlc = False
     player1 = Player(player1_name, is_first_player=True, use_dlc=use_dlc)
-    
-    # Load AI model
-    ai_player = AIPlayer("AI_Player", is_first_player=False, epsilon=0.0, use_dlc=use_dlc) # No exploration for playing
-    try:
-        ai_player.neural_network.load_model("./ai_model.npz")
-        print("AI model loaded successfully.")
-    except FileNotFoundError:
-        print("AI model not found. AI will play randomly.")
 
-    # 用HiveEnv游玩模式包装game，确保保险逻辑分离
+    # 进入人机对战分支后立即询问模型
+    model_path = select_model()
+    ai_player = AIPlayer("AI_Player", is_first_player=False, epsilon=0.0, use_dlc=use_dlc)
+    if model_path:
+        try:
+            ai_player.neural_network.load_model(model_path)
+            print(f"AI模型已加载: {model_path}")
+        except Exception as e:
+            print(f"AI模型加载失败: {e}，AI将随机下棋。")
+    else:
+        print("未选择模型，AI将随机下棋。")
+
     env = HiveEnv(training_mode=False)
-    # 可选：如需用env驱动主循环，可在此处替换game_loop逻辑
     game.initialize_game(player1, ai_player)
     game_loop(game)
 

@@ -9,7 +9,7 @@ from utils import BOARD_SIZE, DIRECTIONS, PieceType, PIECE_TYPE_LIST, PIECE_TYPE
 
 class HiveEnv(gym.Env):
     metadata = {'render_modes': ['human'], 'render_fps': 4}
-    MAX_TURNS = 200  # 新增最大步数限制
+    MAX_TURNS = 120  # 步数上限由200改为120
 
     def __init__(self, training_mode=True):
         super(HiveEnv, self).__init__()
@@ -148,20 +148,32 @@ class HiveEnv(gym.Env):
 
         reward = 0.0
         terminated = False
-        truncated = False # For Gymnasium, truncated is for episode ending due to time limits or other external factors
+        truncated = False
         info = {}
+
+        # --- 新增：无合法动作直接终止 ---
+        legal_actions = self.get_legal_actions()
+        if not legal_actions:
+            reward = -1.0
+            terminated = True
+            info['reason'] = 'no_legal_action'
+            observation = self._get_observation()
+            return observation, reward, terminated, truncated, info
+
+        # --- 新增：棋盘全满判平局 ---
+        board_full = all(self.board.get_piece_at(x, y) is not None for x in range(BOARD_SIZE) for y in range(BOARD_SIZE))
+        if board_full:
+            reward = 0.0
+            terminated = True
+            info['reason'] = 'board_full_draw'
+            observation = self._get_observation()
+            return observation, reward, terminated, truncated, info
 
         try:
             # 每步基础惩罚，鼓励速胜
             reward -= 0.01
             # 统计当前玩家已下的棋子数（用于判断是否到第4回合）
-            max_counts = {
-                0: 1,  # QUEEN_BEE
-                1: 2,  # BEETLE
-                2: 2,  # SPIDER
-                3: 3,  # ANT
-                4: 3   # GRASSHOPPER
-            }
+            max_counts = {0: 1, 1: 2, 2: 2, 3: 3, 4: 3}
             total_placed = 0
             for pt_id, max_count in max_counts.items():
                 count = current_player.piece_count.get(pt_id, 0)
@@ -175,6 +187,12 @@ class HiveEnv(gym.Env):
                 info['reason'] = 'must_place_queen_violation'
                 observation = self._get_observation()
                 return observation, reward, terminated, truncated, info
+            # --- 新增：主动落蜂后奖励 ---
+            if action_type == 'place' and piece_type_id == 0 and total_placed <= 3 and not current_player.is_queen_bee_placed:
+                reward += 0.5  # 前4步主动落蜂后奖励
+            # --- 新增：未及时落蜂后每步小惩罚 ---
+            if not current_player.is_queen_bee_placed and total_placed < 3:
+                reward -= 0.1
             if action_type == 'place':
                 if not (isinstance(piece_type_id, int) and 0 <= piece_type_id < len(PIECE_TYPE_NAME_LIST)):
                     reward = -1.0
@@ -202,7 +220,6 @@ class HiveEnv(gym.Env):
                     observation = self._get_observation()
                     return observation, reward, True, truncated, info
             elif action_type == 'move':
-                # 坐标必须全为 int 且不能为 None
                 fx = int(from_x) if isinstance(from_x, int) else -1
                 fy = int(from_y) if isinstance(from_y, int) else -1
                 tx = int(to_x) if isinstance(to_x, int) else -1
@@ -231,6 +248,32 @@ class HiveEnv(gym.Env):
                     observation = self._get_observation()
                     return observation, reward, True, truncated, info
 
+            # --- 新增：蜂后包围方向奖励 ---
+            def count_surround_dirs(pos):
+                if pos is None:
+                    return 0
+                cnt = 0
+                for dx, dy in DIRECTIONS:
+                    x, y = pos[0] + dx, pos[1] + dy
+                    if not self.board.is_within_bounds(x, y) or self.board.get_piece_at(x, y) is not None:
+                        cnt += 1
+                return cnt
+            # 对方蜂后被包围方向奖励（系数提升）
+            opp_queen_pos = getattr(other_player, 'queen_bee_position', None)
+            opp_queen_dirs = count_surround_dirs(opp_queen_pos)
+            reward += 0.3 * opp_queen_dirs
+            # 己方蜂后被包围方向惩罚（系数提升）
+            my_queen_pos = getattr(current_player, 'queen_bee_position', None)
+            my_queen_dirs = count_surround_dirs(my_queen_pos)
+            reward -= 0.3 * my_queen_dirs
+            # 靠近对方蜂后奖励
+            if opp_queen_pos is not None:
+                for dx, dy in DIRECTIONS:
+                    x, y = opp_queen_pos[0] + dx, opp_queen_pos[1] + dy
+                    if self.board.is_within_bounds(x, y):
+                        piece = self.board.get_piece_at(x, y)
+                        if piece and piece.owner == current_player:
+                            reward += 0.05
             # Check game over condition
             game_over_status = self.game.check_game_over()
             if game_over_status == 1: # Player 1 wins
@@ -242,13 +285,12 @@ class HiveEnv(gym.Env):
             elif game_over_status == 3: # Draw
                 reward = 0.0
                 terminated = True
-
-            # 新增：最大步数限制，超限自动判平
+            # 最大步数限制，超限自动判平
             if not terminated and self.turn_count >= self.MAX_TURNS:
                 reward = 0.0
                 terminated = True
                 info['reason'] = 'max_turns_reached'
-
+            # --- 只在合法执行且未终止时切换玩家和回合数 ---
             if not terminated:
                 self.current_player_idx = 1 - self.current_player_idx
                 self.turn_count += 1
@@ -344,7 +386,7 @@ class HiveEnv(gym.Env):
                                 if piece_to_move.is_valid_move(self.board, to_x, to_y):
                                     action_int = 10000 + from_x * 1000 + from_y * 100 + to_x * 10 + to_y
                                     legal_actions.append(action_int)
-        print(f"[DEBUG] 回合{self.turn_count} 玩家{self.current_player_idx} 合法动作数: {len(legal_actions)}")
+        # print(f"[DEBUG] 回合{self.turn_count} 玩家{self.current_player_idx} 合法动作数: {len(legal_actions)}")
         return legal_actions
 
 
