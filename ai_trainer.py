@@ -91,11 +91,12 @@ class AITrainer:
                 episode_reward += reward
 
                 # 调试输出每步 reward
-                print(f"Step: action={action}, reward={reward}, terminated={terminated}, truncated={truncated}")
+                #print(f"Step: action={action}, reward={reward}, terminated={terminated}, truncated={truncated}")
 
                 # Add experience to replay buffer for both players (if applicable, for self-play)
                 # For self-play, both agents learn from the same experiences, but from their own perspective.
                 # The report implies a single agent learning, so we'll add experience to the current player's buffer.
+                
                 current_player_obj.add_experience(observation, action, reward, next_observation, terminated)
 
                 # Train the AI player
