@@ -12,13 +12,33 @@ def clear_screen():
 
 def display_main_menu():
     clear_screen()
-    print("\n--- Hive Game ---")
-    print("1. Human vs. Human")
-    print("2. Human vs. AI")
-    print("3. AI Training")
-    print("4. Evaluate AI")
-    print("5. Exit Game")
-    return input("Choose an option: ").strip()
+    # 黄色字符画标题
+    print("\033[93m")  # 设置黄色
+    print(r"""
+  _    _ _______      ________    _____          __  __ ______ 
+ | |  | |_   _\ \    / /  ____|  / ____|   /\   |  \/  |  ____|
+ | |__| | | |  \ \  / /| |__    | |  __   /  \  | \  / | |__   
+ |  __  | | |   \ \/ / |  __|   | | |_ | / /\ \ | |\/| |  __|  
+ | |  | |_| |_   \  /  | |____  | |__| |/ ____ \| |  | | |____ 
+ |_|  |_|_____|   \/   |______|  \_____/_/    \_\_|  |_|______|                                                                                                                             
+    """)
+    print("\033[0m")  # 重置颜色
+    # 青色分隔线
+    print("\033[96m" + "═" * 24 + "\033[0m")
+    # 白色菜单选项
+    print("\033[97m1. Human vs Human\033[0m")
+    print("\033[97m2. Human vs AI\033[0m")
+    print("\033[97m3. AI Training\033[0m")
+    print("\033[97m4. Evaluate AI(Not available now)\033[0m")
+    
+    # 亮红色退出选项
+    print("\033[91m5. Exit Game\033[0m")
+    
+    # 青色分隔线
+    print("\033[96m" + "═" * 24 + "\033[0m")
+    
+    # 黄色输入提示
+    return input("\033[93m› Choose an option (1-5): \033[0m").strip()
 
 def get_player_names():
     player1_name = input("Enter Player 1's name: ").strip()
@@ -41,11 +61,16 @@ def game_loop(game: Game):
         game.display_board()
 
         print("\n--- Game Menu ---")
-        print("1. Play Turn")
-        print("2. Restart Game")
-        print("3. End Current Game")
-        print("4. Return to Main Menu")
-        choice = input("Choose an option: ").strip()
+        print("\033[96m1. Play Turn\033[0m   \033[97m落子/移动棋子\033[0m")
+        print("\033[96m2. Restart Game\033[0m   \033[97m重新开始本局\033[0m")
+        print("\033[96m3. End Current Game\033[0m   \033[97m结束当前对局\033[0m")
+        print("\033[96m4. Return to Main Menu\033[0m   \033[97m返回主菜单\033[0m")
+        print("\033[93m5. Show Rules & Piece Abilities\033[0m   \033[97m查看游戏规则与棋子能力\033[0m")
+        # 选中玩家颜色（蓝=玩家1，橙=玩家2）
+        player_color = '\033[94m' if current_player == game.player1 else '\033[38;5;208m'
+        player_name = current_player.get_name() if current_player else "?"
+        prompt = f"{player_color}For {player_name}, Choose an option (1-5): \033[0m"
+        choice = input(prompt).strip()
 
         if choice == '1':
             from hive_env import Action
@@ -215,8 +240,16 @@ def game_loop(game: Game):
             exit_game_loop = True # End current game and return to main menu
         elif choice == '4':
             exit_game_loop = True # Return to main menu
+        elif choice == '5':
+            print("\n\033[95m【Hive 游戏规则简述】\033[0m")
+            print("- 目标：围住对方的蜂后(Queen Bee)，六个方向都被棋子或边界包围即判负。\n- 每回合可选择落子或移动己方棋子。\n- 第4回合前必须落下蜂后。\n- 棋子不能断开蜂群。\n- 棋盘为10x10，坐标(x, y)横为x轴，竖为y轴。\n")
+            print("\033[95m【棋子能力说明】\033[0m")
+            print("- \033[93mQueen Bee(蜂后)\033[0m: 六方向单步移动。\n- \033[94mBeetle(甲虫)\033[0m: 六方向单步，可爬到其他棋子上。\n- \033[92mSpider(蜘蛛)\033[0m: 必须连续移动三步，不能回头。\n- \033[96mAnt(蚂蚁)\033[0m: 可沿蜂群边缘任意步数移动。\n- \033[91mGrasshopper(蚂蚱)\033[0m: 跳过一条直线上的所有棋子，落到第一个空格。\n- \033[95mLadybug(瓢虫)\033[0m: 先在蜂群上走两步，再落下一步。\n- \033[97mMosquito(蚊子)\033[0m: 模仿相邻棋子的能力。\n- \033[90mPillbug(鼠妇)\033[0m: 六方向单步，并可搬运相邻棋子。\n")
+            input("\033[93m按回车返回游戏菜单...\033[0m")
+            continue
         else:
-            print("Invalid option. Please choose a number between 1 and 4.")
+            print("Invalid option. Please choose a number between 1 and 5.")
+            input("\nPress Enter to continue...")
 
         if not exit_game_loop:
             input("\nPress Enter to continue...")

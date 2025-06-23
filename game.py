@@ -90,10 +90,13 @@ class Game:
                 if piece and piece.get_piece_type() == PieceType.QUEEN_BEE:
                     if piece.get_owner() == self.player1:
                         player1_queen_found = True
-                        player1_queen_surrounded = self.board.is_position_surrounded(x, y)
+                        # 使用consider_edge=True，边缘也算被包围
+                        if self.board.is_position_surrounded(x, y, consider_edge=True):
+                            player1_queen_surrounded = True
                     elif piece.get_owner() == self.player2:
                         player2_queen_found = True
-                        player2_queen_surrounded = self.board.is_position_surrounded(x, y)
+                        if self.board.is_position_surrounded(x, y, consider_edge=True):
+                            player2_queen_surrounded = True
 
         # 只有蜂后已放置且被包围才算输，否则游戏继续
         if (player1_queen_found and player1_queen_surrounded) or (player2_queen_found and player2_queen_surrounded):
@@ -165,6 +168,17 @@ class Game:
 
     def display_board(self):
         self.board.display_board()
+        # 输出六个方向说明
+        print("六个方向坐标增量: (1,0) 右，(-1,0) 左，(0,1) 下，(0,-1) 上，(1,-1) 右上，(-1,1) 左下")
+        # 自动输出蜂后包围状态
+        for player, label in [(self.player1, "1"), (self.player2, "2")]:
+            pos = getattr(player, 'queen_bee_position', None)
+            if player and getattr(player, 'is_queen_bee_placed', False) and pos is not None:
+                x, y = pos
+                if self.board.is_position_surrounded(x, y, consider_edge=True):
+                    print(f"\033[91m[提示] 玩家{label}的蜂后已被包围！\033[0m")
+                else:
+                    print(f"\033[92m[提示] 玩家{label}的蜂后未被包围。\033[0m")
 
     def display_turn_count(self):
         print(f"Current Turn: {self.turn_count}")

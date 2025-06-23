@@ -65,10 +65,22 @@ class Player:
 
     def display_piece_count(self):
         print(f"Piece count for {self.name}:")
-        for piece_type in PIECE_TYPE_LIST:
+        # 每行显示两个棋子，数量为0红色，>0绿色
+        from utils import PIECE_TYPE_NAME_LIST, PIECE_TYPE_LIST
+        RESET = '\033[0m'
+        GREEN = '\033[92m'
+        RED = '\033[91m'
+        row = []
+        for idx, piece_type in enumerate(PIECE_TYPE_LIST):
             count = self.piece_count.get(int(piece_type), 0)
             name = PIECE_TYPE_NAME_LIST[piece_type]
-            print(f"  {name}: {count}")
+            color = GREEN if count > 0 else RED
+            row.append(f"  {name}: {color}{count}{RESET}")
+            if len(row) == 2:
+                print(' |'.join(row))
+                row = []
+        if row:
+            print(' |'.join(row))
 
     def clone(self):
         # 动态获取自身类型，保留use_dlc参数

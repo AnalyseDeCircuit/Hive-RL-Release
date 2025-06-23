@@ -49,15 +49,15 @@ class ChessBoard:
                 return True
         return False
 
-    def is_position_surrounded(self, x: int, y: int, consider_edge: bool = False) -> bool:
+    def is_position_surrounded(self, x: int, y: int, consider_edge: bool = True) -> bool:
+        # consider_edge=True: 超出棋盘也算被包围
         for dx, dy in DIRECTIONS:
             adj_x, adj_y = x + dx, y + dy
             if self.is_within_bounds(adj_x, adj_y):
-                if not self.board[adj_x][adj_y]:  # If any adjacent position is empty
+                if not self.board[adj_x][adj_y]:
                     return False
-            elif not consider_edge:  # If not considering edge as surrounded and out of bounds
-                return False
-        return True  # All adjacent positions are occupied or out of bounds (and consider_edge is True)
+            # consider_edge=True时，超出棋盘也算被包围，无需else
+        return True  # 所有相邻都被占或超出棋盘
 
     def place_piece(self, x: int, y: int, piece_type: PieceType, player):
         if not self.is_within_bounds(x, y):
