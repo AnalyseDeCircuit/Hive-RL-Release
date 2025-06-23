@@ -24,7 +24,7 @@ class AIPlayer(Player):
         self.learning_rate = learning_rate
         self.discount_factor = discount_factor
         # PyTorch神经网络
-        self.neural_network = NeuralNetwork(input_dim=814, hidden_dim=256, output_dim=1)
+        self.neural_network = NeuralNetwork(input_dim=814, hidden_dim=512, output_dim=1)
         self.optimizer = torch.optim.Adam(self.neural_network.parameters(), lr=self.learning_rate)
 
         # Experience Replay Buffer
@@ -32,16 +32,13 @@ class AIPlayer(Player):
         self.max_buffer_size = 10000 # As per report
 
     def select_action(self, env, game_state: Game, board: ChessBoard, current_player_idx: int, debug=False):
+        if env is None:
+            raise RuntimeError("[AIPlayer][FATAL] select_action 必须传入 env，禁止 fallback 到自定义 get_legal_actions！请检查训练主循环/采样/测试代码调用。")
         current_state_vector = self._get_observation_from_game_state(game_state, board, current_player_idx, debug=debug)
-        if env is not None:
-            legal_actions = env.get_legal_actions()
-        else:
-            legal_actions = self._get_legal_actions_from_game_state(game_state, board, current_player_idx)
-
+        # 只用环境的 get_legal_actions，彻底同步合法动作定义
+        legal_actions = env.get_legal_actions() if env is not None else []
         if not legal_actions:
             return None # No legal actions, game might be over or stuck
-
-        # ---保险逻辑增强：必须落蜂后时只允许place QueenBee---
         current_player = game_state.player1 if current_player_idx == 0 else game_state.player2
         must_place_queen = (game_state.turn_count == 3 and not getattr(current_player, 'is_queen_bee_placed', False))
         # ---新增：前4步且蜂后未落时，优先探索放蜂后---
@@ -50,55 +47,33 @@ class AIPlayer(Player):
             if queenbee_actions:
                 if random.random() < self.epsilon:
                     return random.choice(queenbee_actions)
-                # 否则后续Q值选择时也优先考虑queenbee_actions
-
         # Epsilon-greedy strategy
         if random.random() < self.epsilon:
             # Explore: choose a random legal action
             action = random.choice(legal_actions)
-            # ---保险：蜂后未落时禁止move动作（无论env返回什么）---
-            if not getattr(current_player, 'is_queen_bee_placed', False):
-                legal_actions = [a for a in legal_actions if Action.decode_action(a)[0] == 'place']
-                if not legal_actions:
-                    return None
-                action_type, *_ = Action.decode_action(action)
-                if action_type != 'place':
-                    action = random.choice(legal_actions)
-            return action
         else:
             # Exploit: choose the action with the highest Q-value
             best_actions = []
             max_q_value = -float("inf")
-
             for action_candidate in legal_actions:
-                # 用局部变量模拟，不污染全局Game单例
                 sim_player1 = game_state.player1.clone() if game_state.player1 is not None else None
                 sim_player2 = game_state.player2.clone() if game_state.player2 is not None else None
                 sim_board = board.clone() if board is not None else None
                 sim_turn_count = game_state.turn_count
-
-                # 如果仿真player或board为None，直接跳过该action
                 if sim_board is None or (current_player_idx == 0 and sim_player1 is None) or (current_player_idx == 1 and sim_player2 is None):
                     continue
-
-                simulated_reward = 0.0 # Immediate reward for simulation
+                simulated_reward = 0.0
                 try:
                     action_type, from_x, from_y, to_x, to_y, piece_type_id = Action.decode_action(action_candidate)
-                    # 参数判空并转int
                     from_x = int(from_x) if from_x is not None else None
                     from_y = int(from_y) if from_y is not None else None
                     to_x = int(to_x) if to_x is not None else None
                     to_y = int(to_y) if to_y is not None else None
                     piece_type_id = self.safe_piece_type_id(piece_type_id)
-                    if current_player_idx == 0:
-                        sim_current = sim_player1
-                    else:
-                        sim_current = sim_player2
+                    sim_current = sim_player1 if current_player_idx == 0 else sim_player2
                     if sim_current is None:
                         continue
-                    # Apply action to sim_player
                     if action_type == 'place':
-                        # 只要有一个坐标为None就跳过
                         if to_x is None or to_y is None or piece_type_id is None:
                             simulated_reward = -1.0
                         elif sim_current.piece_count.get(piece_type_id, 0) > 0 and \
@@ -118,11 +93,8 @@ class AIPlayer(Player):
                                 simulated_reward = 0.1
                             else:
                                 simulated_reward = -0.5
-                    # 检查胜负
                 except Exception:
                     simulated_reward = -1.0
-
-                # 生成下一个状态特征
                 next_state_vector = self._get_observation_from_game_state(game_state, sim_board, 1 - current_player_idx)
                 q_value = simulated_reward + self.discount_factor * self.neural_network.forward(next_state_vector)
                 if q_value > max_q_value:
@@ -131,72 +103,31 @@ class AIPlayer(Player):
                 elif q_value == max_q_value:
                     best_actions.append(action_candidate)
             if not best_actions:
-                return None  # 没有可选动作，返回None，防止崩溃
+                return None
             action = random.choice(best_actions)
-            # ---保险：蜂后未落时禁止move动作（无论env返回什么）---
-            if not getattr(current_player, 'is_queen_bee_placed', False):
-                legal_actions = [a for a in legal_actions if Action.decode_action(a)[0] == 'place']
-                if not legal_actions:
-                    return None
-                action_type, *_ = Action.decode_action(action)
-                if action_type != 'place':
-                    action = random.choice(legal_actions)
-            # ---最终保险：蜂后未落时action只能是place---
-            if not getattr(current_player, 'is_queen_bee_placed', False):
-                action_type, *_ = Action.decode_action(action)
-                if action_type != 'place':
-                    # 强制只选place动作
-                    place_actions = [a for a in legal_actions if Action.decode_action(a)[0] == 'place']
-                    if place_actions:
-                        action = random.choice(place_actions)
-                    else:
-                        return None
-            # ---最终保险：must_place_queen时只能是place QueenBee---
-            if must_place_queen:
-                action_type, *_, piece_type_id = Action.decode_action(action)
-                if not (action_type == 'place' and piece_type_id == 0):
-                    queen_actions = [a for a in legal_actions if (Action.decode_action(a)[0] == 'place' and Action.decode_action(a)[5] == 0)]
-                    if queen_actions:
-                        action = random.choice(queen_actions)
-                    else:
-                        return None
-        # ---终极保险：返回前再次强制过滤，蜂后未落时绝不允许move动作---
+        # ---终极保险：返回前再次强制过滤，action 必须在 legal_actions 内---
+        if action not in legal_actions:
+            print(f"[AIPlayer][DEBUG] action {action} 不在 legal_actions，强制随机采样合法动作。")
+            action = random.choice(legal_actions)
+        # ---蜂后未落时绝不允许move动作---
         if not getattr(current_player, 'is_queen_bee_placed', False):
-            action_type = Action.decode_action(action)[0]
-            if action_type != 'place':
-                # 只允许place动作
-                place_actions = [a for a in legal_actions if Action.decode_action(a)[0] == 'place']
-                if place_actions:
-                    action = random.choice(place_actions)
-                else:
-                    return None
-        # ---终极保险：必须落蜂后时只允许place QueenBee---
-        if must_place_queen:
-            action_type, *_, piece_type_id = Action.decode_action(action)
-            if not (action_type == 'place' and piece_type_id == 0):
-                queen_actions = [a for a in legal_actions if (Action.decode_action(a)[0] == 'place' and Action.decode_action(a)[5] == 0)]
-                if queen_actions:
-                    action = random.choice(queen_actions)
-                else:
-                    return None
-        # ---终极保险：蜂后未落时绝不允许move动作，must_place_queen时绝不允许非place QueenBee---
-        if not getattr(current_player, 'is_queen_bee_placed', False):
-            # 只允许place动作
             place_actions = [a for a in legal_actions if Action.decode_action(a)[0] == 'place']
             if not place_actions:
                 print("[AIPlayer][WARN] 蜂后未落且无place动作，AI被保险层拦截，返回None，环境应给予惩罚。")
                 return None
             action_type = Action.decode_action(action)[0]
             if action_type != 'place':
+                print(f"[AIPlayer][DEBUG] 蜂后未落但action类型为{action_type}，强制采样place动作。")
                 action = random.choice(place_actions)
+        # ---必须落蜂后时只允许place QueenBee---
         if must_place_queen:
-            # 只允许place QueenBee
             queen_actions = [a for a in legal_actions if (Action.decode_action(a)[0] == 'place' and Action.decode_action(a)[5] == 0)]
             if not queen_actions:
                 print("[AIPlayer][WARN] must_place_queen但无QueenBee可下，AI被保险层拦截，返回None，环境应给予惩罚。")
                 return None
             action_type, *_, piece_type_id = Action.decode_action(action)
             if not (action_type == 'place' and piece_type_id == 0):
+                print(f"[AIPlayer][DEBUG] must_place_queen但action不是place QueenBee，强制采样QueenBee动作。")
                 action = random.choice(queen_actions)
         return action
 
@@ -336,9 +267,11 @@ class AIPlayer(Player):
         self.replay_buffer.append((state, action, reward, next_state, terminated))
 
     def train_on_batch(self, batch_size=32):
-        if len(self.replay_buffer) < batch_size:
+        # 只采样合法动作样本（reward > -2.0，彻底丢弃所有非法动作样本）
+        legal_samples = [exp for exp in self.replay_buffer if exp[2] > -2.0]
+        if len(legal_samples) < batch_size:
             return
-        batch = random.sample(self.replay_buffer, batch_size)
+        batch = random.sample(legal_samples, batch_size)
         states = np.stack([s for s,_,_,_,_ in batch])
         targets = []
         for _,_,reward,next_state,terminated in batch:

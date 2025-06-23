@@ -80,10 +80,21 @@ def game_loop(game: Game):
                 print(f"{current_player.get_name()} is thinking...")
                 current_player_idx = 0 if current_player == game.player1 else 1
                 action = current_player.select_action(None, game, game.board, current_player_idx, debug=False)
-                # 如果AI无动作且蜂后未落，强制生成一个放蜂后动作
+                # 如果AI无动作且蜂后未落，强制生成一个放蜂后动作（遍历全盘找合法点）
                 if action is None and not getattr(current_player, 'is_queen_bee_placed', False):
-                    print("[DEBUG] AI保险：无动作且蜂后未落，强制生成放蜂后动作 (0,0)")
-                    action = Action.encode_place_action(0, 0, 0)
+                    print("[DEBUG] AI保险：无动作且蜂后未落，遍历全盘强制生成放蜂后动作")
+                    placed = False
+                    for x in range(BOARD_SIZE):
+                        for y in range(BOARD_SIZE):
+                            if game.board.get_piece_at(x, y) is None and game.board.is_valid_placement(x, y, current_player.is_first_player, game.turn_count):
+                                action = Action.encode_place_action(x, y, 0)
+                                placed = True
+                                break
+                        if placed:
+                            break
+                    if not placed:
+                        print("[ERROR] 无法强制落蜂后，跳过回合。")
+                        action = None
                 if action is None:
                     # debug输出当前可落子空格数
                     empty_count = sum(

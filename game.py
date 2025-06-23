@@ -136,6 +136,19 @@ class Game:
                 if action == 'P':
                     x, y, piece_type_str = input("Enter coordinates (x y) and piece type (0-7): ").split()
                     x, y, piece_type = int(x), int(y), int(piece_type_str)
+                    # ---保险：手动落子时也用环境合法性校验---
+                    from hive_env import HiveEnv, Action
+                    env = HiveEnv(training_mode=False)
+                    env.board = self.board
+                    env.player1 = self.player1
+                    env.player2 = self.player2
+                    env.current_player_idx = 0 if self.current_player == self.player1 else 1
+                    env.turn_count = self.turn_count
+                    legal_actions = env.get_legal_actions()
+                    action_int = Action.encode_place_action(x, y, piece_type)
+                    if action_int not in legal_actions:
+                        print("[保险] 非法落子：该位置不可放置或已被占用！请重新输入。")
+                        continue
                     if self.current_player is not None:
                         self.current_player.place_piece(self.board, x, y, piece_type, self.turn_count)
                     valid_input = True
@@ -143,6 +156,19 @@ class Game:
                     x, y, to_x, to_y = map(int, input("Enter from coordinates (x y) and to coordinates (toX toY): ").split())
                     piece_type_str = input("Enter piece type to move (0-7): ").strip()
                     piece_type = int(piece_type_str)
+                    # ---保险：手动移动时也用环境合法性校验---
+                    from hive_env import HiveEnv, Action
+                    env = HiveEnv(training_mode=False)
+                    env.board = self.board
+                    env.player1 = self.player1
+                    env.player2 = self.player2
+                    env.current_player_idx = 0 if self.current_player == self.player1 else 1
+                    env.turn_count = self.turn_count
+                    legal_actions = env.get_legal_actions()
+                    action_int = Action.encode_move_action(x, y, to_x, to_y)
+                    if action_int not in legal_actions:
+                        print("[保险] 非法移动：该移动不可执行！请重新输入。")
+                        continue
                     if self.current_player is not None:
                         self.current_player.move_piece(self.board, x, y, to_x, to_y, piece_type)
                     valid_input = True
