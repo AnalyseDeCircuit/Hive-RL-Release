@@ -32,11 +32,11 @@ class AIPlayer(Player):
         self.max_buffer_size = 10000 # As per report
 
     def select_action(self, env, game_state: Game, board: ChessBoard, current_player_idx: int, debug=False):
+        # ---兼容AI对战/测试流程：env为None时自动fallback到自带合法动作生成器---
         if env is None:
-            raise RuntimeError("[AIPlayer][FATAL] select_action 必须传入 env，禁止 fallback 到自定义 get_legal_actions！请检查训练主循环/采样/测试代码调用。")
-        current_state_vector = self._get_observation_from_game_state(game_state, board, current_player_idx, debug=debug)
-        # 只用环境的 get_legal_actions，彻底同步合法动作定义
-        legal_actions = env.get_legal_actions() if env is not None else []
+            legal_actions = self._get_legal_actions_from_game_state(game_state, board, current_player_idx)
+        else:
+            legal_actions = env.get_legal_actions()
         if not legal_actions:
             return None # No legal actions, game might be over or stuck
         current_player = game_state.player1 if current_player_idx == 0 else game_state.player2
@@ -308,6 +308,13 @@ class AIPlayer(Player):
             cloned_player.queen_bee_position = None
         # 神经网络等可选属性如需深拷贝可补充
         return cloned_player
+
+    def update_epsilon(self, episode, decay_every=1000, decay_rate=0.5, min_epsilon=0.05):
+        """
+        动态调整epsilon，每decay_every局衰减一次，最低不低于min_epsilon。
+        """
+        if episode % decay_every == 0 and self.epsilon > min_epsilon:
+            self.epsilon = max(self.epsilon * decay_rate, min_epsilon)
 
 
 

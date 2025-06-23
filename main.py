@@ -321,10 +321,48 @@ def human_vs_ai_game_loop():
 
 def ai_training_loop():
     print("\n--- AI Training ---")
-    trainer = AITrainer()
-    num_episodes = int(input("Enter number of training episodes (e.g., 1000): "))
-    # 启用多进程采样
-    trainer.train(num_episodes=num_episodes)
+    # 二级菜单
+    print("请选择训练模式：")
+    print("1. 训练新AI（新建模型目录）")
+    print("2. 继续训练已有AI（断点续训）")
+    mode = input("输入选项(1-2，回车默认1): ").strip()
+    trainer = None
+    if mode == '2':
+        # 列出所有可用老AI模型
+        model_dirs = sorted([d for d in glob.glob("models/*") if os.path.isdir(d)])
+        if not model_dirs:
+            print("未找到任何历史AI模型，将新建训练。")
+            trainer = AITrainer(force_new=True)
+        else:
+            print("可用历史AI模型：")
+            for idx, d in enumerate(model_dirs):
+                # 显示目录下最新npz模型
+                npz_files = sorted(glob.glob(os.path.join(d, "*_final.npz")))
+                npz_str = npz_files[-1] if npz_files else "(无模型文件)"
+                print(f"{idx}: {d}  最新模型: {os.path.basename(npz_str) if npz_files else npz_str}")
+            sel = input("请输入要继续训练的AI编号（回车默认最新）:").strip()
+            if sel == '':
+                model_dir = model_dirs[-1]
+            else:
+                try:
+                    model_dir = model_dirs[int(sel)]
+                except Exception:
+                    print("输入无效，使用最新。")
+                    model_dir = model_dirs[-1]
+            # 解析run_prefix
+            npz_files = sorted(glob.glob(os.path.join(model_dir, "*_final.npz")))
+            if not npz_files:
+                print("该目录下无模型文件，将新建训练。")
+                trainer = AITrainer(force_new=True)
+            else:
+                latest_npz = os.path.basename(npz_files[-1])
+                run_prefix = latest_npz.split("_final.npz")[0]
+                trainer = AITrainer(custom_dir=model_dir, custom_prefix=run_prefix)
+                print(f"[断点续训] 继续训练: {model_dir}, 前缀: {run_prefix}")
+    else:
+        trainer = AITrainer(force_new=True)
+    print("\n训练将无限进行，请随时按 Ctrl+C 终止并自动保存断点。\n")
+    trainer.train()
     input("\nAI training complete. Press Enter to return to main menu...")
 
 def ai_evaluation_loop():

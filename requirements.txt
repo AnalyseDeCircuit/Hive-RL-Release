@@ -3,5 +3,6 @@ gymnasium
 numpy
 torch
 matplotlib
+numba
 # 其它依赖可根据实际需要补充
 
