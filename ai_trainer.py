@@ -140,12 +140,29 @@ class AITrainer:
                     end_stats['other'] += 1
                 else:
                     end_stats['other'] += 1
-                if episode >= 200:
-                    self.player1_ai.epsilon = max(min_epsilon, self.player1_ai.epsilon * epsilon_decay)
-                    self.player2_ai.epsilon = max(min_epsilon, self.player2_ai.epsilon * epsilon_decay)
                 # 自动衰减epsilon（推荐每1000局减半，最低0.05）
-                self.player1_ai.update_epsilon(episode, decay_every=1000, decay_rate=0.5, min_epsilon=0.05)
-                self.player2_ai.update_epsilon(episode, decay_every=1000, decay_rate=0.5, min_epsilon=0.05)
+                # 修正：仅当episode>0且能整除decay_every时才衰减，避免第一轮直接减半
+                if episode > 0:
+                    self.player1_ai.update_epsilon(episode, decay_every=1000, decay_rate=0.5, min_epsilon=0.05)
+                    self.player2_ai.update_epsilon(episode, decay_every=1000, decay_rate=0.5, min_epsilon=0.05)
+                # ---reward异常检测与上限保护---
+                REWARD_ABS_LIMIT = 200  # 正常Hive终局奖励绝不应超过±200
+                if abs(episode_reward) > REWARD_ABS_LIMIT:
+                    print(f"[WARN][REWARD] Episode {episode+1} reward异常: {episode_reward:.2f}，请检查reward shaping/终局奖励/循环。")
+                    # reward上限保护，截断极端reward，防止AI刷分
+                    episode_reward = max(min(episode_reward, REWARD_ABS_LIMIT), -REWARD_ABS_LIMIT)
+                # ---自动统计reward分布---
+                if not hasattr(self, '_reward_anomaly_counter'):
+                    self._reward_anomaly_counter = {'>limit': 0, '<-limit': 0, 'normal': 0}
+                if episode_reward >= REWARD_ABS_LIMIT:
+                    self._reward_anomaly_counter['>limit'] += 1
+                elif episode_reward <= -REWARD_ABS_LIMIT:
+                    self._reward_anomaly_counter['<-limit'] += 1
+                else:
+                    self._reward_anomaly_counter['normal'] += 1
+                if (episode+1) % 1000 == 0:
+                    print(f"[REWARD-ANALYSIS] 近1000局 reward 超上限: {self._reward_anomaly_counter['>limit']}，超下限: {self._reward_anomaly_counter['<-limit']}，正常: {self._reward_anomaly_counter['normal']}")
+                    self._reward_anomaly_counter = {'>limit': 0, '<-limit': 0, 'normal': 0}
                 self.average_rewards.append(episode_reward)
                 self.episode_steps_history.append(episode_steps)
                 self.illegal_action_count_history.append(illegal_action_count)

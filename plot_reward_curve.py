@@ -125,8 +125,21 @@ if end_stats is not None and len(end_stats) > 0:
 else:
     ax.set_visible(False)
 
-# 4. 预留空白或后续扩展
-axes[1,1].axis('off')
+# 4. reward分布直方图（异常分析）
+ax = axes[1,1]
+if rewards is not None and len(rewards) > 0:
+    REWARD_ABS_LIMIT = 200
+    bins = np.linspace(min(-REWARD_ABS_LIMIT, np.min(rewards)), max(REWARD_ABS_LIMIT, np.max(rewards)), 41)
+    ax.hist(rewards, bins=bins, color='skyblue', edgecolor='black', alpha=0.7)
+    ax.axvline(REWARD_ABS_LIMIT, color='red', linestyle='--', label=f'+{REWARD_ABS_LIMIT}上限')
+    ax.axvline(-REWARD_ABS_LIMIT, color='red', linestyle='--', label=f'-{REWARD_ABS_LIMIT}下限')
+    ax.set_xlabel('Episode Reward')
+    ax.set_ylabel('Count')
+    ax.set_title('Reward Distribution (Histogram)')
+    ax.legend()
+    ax.grid(True)
+else:
+    ax.text(0.5, 0.5, "No reward data", ha='center', va='center', fontsize=12)
 
 plt.tight_layout()
 plt.show()

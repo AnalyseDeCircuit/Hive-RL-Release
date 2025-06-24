@@ -237,14 +237,10 @@ class HiveEnv(gym.Env):
                 return observation, reward, terminated, truncated, info
             # 2. 每步基础惩罚（更小）
             reward = -0.001
-            # 3. 主动落蜂后奖励（更大）
-            # 已在上方安全分支实现，无需重复
-            # 5. 合规落子奖励
-            # 已在上方安全分支实现，无需重复
-            # 6. 合规移动奖励
+            # 6. 合规移动奖励（只保留基础奖励，防止刷分）
             if action_type == 'move' and not terminated:
-                reward += 0.2
-            # 7. 包围蜂后奖励、己方蜂后被包围惩罚、靠近蜂后奖励、终局奖励等其余逻辑优化
+                reward += 0.15
+            # 7. 包围蜂后奖励、己方蜂后被围惩罚、靠近蜂后奖励、终局奖励等其余逻辑优化
             def count_surround_dirs(pos):
                 if pos is None:
                     return 0
@@ -259,40 +255,70 @@ class HiveEnv(gym.Env):
                 prev_opp_queen_dirs = self._last_opp_queen_dirs
             opp_queen_pos = getattr(other_player, 'queen_bee_position', None)
             opp_queen_dirs = count_surround_dirs(opp_queen_pos)
-            surround_bonus_limit = 6
+            surround_bonus_limit = max(6, int(self.turn_count * 0.1))
             surround_bonus_this_step = 0
-            if opp_queen_dirs > prev_opp_queen_dirs and self.queenbee_surround_bonus_count < surround_bonus_limit:
-                add_times = min(opp_queen_dirs - prev_opp_queen_dirs, surround_bonus_limit - self.queenbee_surround_bonus_count)
-                surround_bonus_this_step = 15.0 * add_times
-                reward += surround_bonus_this_step
-                self.queenbee_surround_bonus_count += add_times
-            self._last_opp_queen_dirs = opp_queen_dirs
-            if opp_queen_dirs == 6:
-                reward += 50.0
+            # --- reward shaping 只在非终局时生效 ---
+            game_over_status = self.game.check_game_over()
+            # 记录上一步己方蜂后被围数
+            prev_my_queen_dirs = 0
+            if hasattr(self, '_last_my_queen_dirs'):
+                prev_my_queen_dirs = self._last_my_queen_dirs
             my_queen_pos = getattr(current_player, 'queen_bee_position', None)
             my_queen_dirs = count_surround_dirs(my_queen_pos)
-            if my_queen_dirs >= 4:
-                reward -= 1.0 * my_queen_dirs
+            self._last_my_queen_dirs = my_queen_dirs
+            if game_over_status == 0:  # 非终局
+                # 包围奖励
+                if opp_queen_dirs > prev_opp_queen_dirs and self.queenbee_surround_bonus_count < surround_bonus_limit:
+                    add_times = min(opp_queen_dirs - prev_opp_queen_dirs, surround_bonus_limit - self.queenbee_surround_bonus_count)
+                    surround_bonus_this_step = 2.0 * add_times
+                    reward += surround_bonus_this_step
+                    self.queenbee_surround_bonus_count += add_times
+                self._last_opp_queen_dirs = opp_queen_dirs
+                # 蜂后被围惩罚（只惩罚恶化，delta-based，阶梯式）
+                if my_queen_dirs > prev_my_queen_dirs:
+                    delta = my_queen_dirs - prev_my_queen_dirs
+                    if my_queen_dirs <= 3:
+                        reward -= 0.3 * delta
+                    elif my_queen_dirs <= 5:
+                        reward -= 0.6 * delta
+                    else:
+                        reward -= 1.0 * delta
+                # 被围6格立即终局
+                if my_queen_dirs == 6:
+                    reward = -20.0
+                    terminated = True
+                    info['reason'] = 'queen_surrounded'
+                # 靠近对方蜂后奖励
+                if opp_queen_pos is not None:
+                    for dx, dy in DIRECTIONS:
+                        x, y = opp_queen_pos[0] + dx, opp_queen_pos[1] + dy
+                        if self.board.is_within_bounds(x, y):
+                            piece = self.board.get_piece_at(x, y)
+                            if piece and piece.owner == current_player:
+                                reward += 0.5
             else:
-                reward -= 0.5 * my_queen_dirs
-            # 靠近对方蜂后奖励
-            if opp_queen_pos is not None:
-                for dx, dy in DIRECTIONS:
-                    x, y = opp_queen_pos[0] + dx, opp_queen_pos[1] + dy
-                    if self.board.is_within_bounds(x, y):
-                        piece = self.board.get_piece_at(x, y)
-                        if piece and piece.owner == current_player:
-                            reward += 1.0
-            # Check game over condition
-            game_over_status = self.game.check_game_over()
+                self._last_opp_queen_dirs = opp_queen_dirs  # 终局也要同步，防止下局出错
+                self._last_my_queen_dirs = count_surround_dirs(getattr(current_player, 'queen_bee_position', None))
+            # --- 终局奖励 ---
             if game_over_status == 1: # Player 1 wins
-                reward = 200.0 if self.current_player_idx == 0 else -200.0
+                reward = 20.0 if self.current_player_idx == 0 else -20.0
                 terminated = True
             elif game_over_status == 2: # Player 2 wins
-                reward = 200.0 if self.current_player_idx == 1 else -200.0
+                reward = 20.0 if self.current_player_idx == 1 else -20.0
                 terminated = True
             elif game_over_status == 3: # Draw
-                reward = 0.0
+                # 平局奖励根据包围数差异微调
+                my_queen_pos = getattr(current_player, 'queen_bee_position', None)
+                opp_queen_pos = getattr(other_player, 'queen_bee_position', None)
+                my_queen_dirs = count_surround_dirs(my_queen_pos)
+                opp_queen_dirs = count_surround_dirs(opp_queen_pos)
+                surround_diff = opp_queen_dirs - my_queen_dirs
+                if surround_diff > 0:
+                    reward = 5.0
+                elif surround_diff < 0:
+                    reward = -5.0
+                else:
+                    reward = 0.0
                 terminated = True
             if not terminated and self.turn_count >= self.MAX_TURNS:
                 reward = -20.0
