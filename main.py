@@ -166,41 +166,18 @@ def game_loop(game: Game):
                         else:
                             moved_piece = None
                         if moved_piece:
-                            safe_piece_type = getattr(moved_piece.piece_type, 'value', None)
-                            if not isinstance(safe_piece_type, int):
-                                safe_piece_type = 0
+                            # 直接使用实际棋子的类型（忽略类型检查）
+                            safe_piece_type = moved_piece.piece_type  # type: ignore
                             print(f"AI moves {getattr(moved_piece.piece_type, 'name', str(moved_piece.piece_type))} from ({from_x}, {from_y}) to ({to_x}, {to_y})")
-                            if all(isinstance(v, int) and v is not None for v in (from_x, from_y, to_x, to_y, safe_piece_type)):
-                                try:
-                                    current_player.move_piece(game.board, from_x, from_y, to_x, to_y, safe_piece_type)
-                                    game.switch_player()
-                                except RuntimeError as e:
-                                    msg = str(e)
-                                    if ("QueenBee must be placed before moving other pieces" in msg or
-                                        "Queen Bee must be placed by the fourth turn." in msg or
-                                        "must_place_queen_violation" in msg or
-                                        (not getattr(current_player, 'is_queen_bee_placed', False) and game.turn_count >= 3)):
-                                        print(f"[WARNING] 非法move动作: {e}，强制落蜂后。")
-                                        # 强制落蜂后
-                                        placed = False
-                                        for x in range(BOARD_SIZE):
-                                            for y in range(BOARD_SIZE):
-                                                if game.board.get_piece_at(x, y) is None:
-                                                    try:
-                                                        current_player.place_piece(game.board, x, y, 0, game.turn_count)
-                                                        placed = True
-                                                        game.switch_player()
-                                                        break
-                                                    except Exception:
-                                                        continue
-                                            if placed:
-                                                break
-                                        if not placed:
-                                            print("[ERROR] 无法强制落蜂后，跳过回合。")
-                                    else:
-                                        print(f"[ERROR] move_piece异常: {e}")
-                            else:
-                                print("AI move action decode error: invalid coordinates/type.")
+                            try:
+                                # 确保坐标和类型为 int
+                                assert isinstance(from_x, int) and isinstance(from_y, int) and isinstance(to_x, int) and isinstance(to_y, int)
+                                assert isinstance(safe_piece_type, int)
+                                # 调用时忽略静态类型检查
+                                current_player.move_piece(game.board, from_x, from_y, to_x, to_y, safe_piece_type)  # type: ignore
+                                game.switch_player()
+                            except Exception as e:
+                                print(f"[ERROR] move_piece 异常: {e}")
                         else:
                             print("AI tried to move a non-existent piece. This should not happen.")
                     else:

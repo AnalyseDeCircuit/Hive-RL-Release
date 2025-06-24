@@ -235,18 +235,24 @@ class HiveEnv(gym.Env):
                 info = {'reason': 'must_place_queen_violation'}
                 observation = self._get_observation()
                 return observation, reward, terminated, truncated, info
-            # 2. 每步基础惩罚（更小）
-            reward = -0.001
+            # 2. 每步基础惩罚（加大，以鼓励快胜）
+            reward = -0.01
             # 6. 合规移动奖励（只保留基础奖励，防止刷分）
             if action_type == 'move' and not terminated:
                 reward += 0.15
+            elif action_type == 'place' and not terminated:
+                # 鼓励多下不同棋子（非蜂后）
+                if piece_type_id is not None and piece_type_id != 0:
+                    reward += 0.05
             # 7. 包围蜂后奖励、己方蜂后被围惩罚、靠近蜂后奖励、终局奖励等其余逻辑优化
             def count_surround_dirs(pos):
+                # 统计被棋子或边界占据的方向（边界也视为被包围）
                 if pos is None:
                     return 0
                 cnt = 0
                 for dx, dy in DIRECTIONS:
                     x, y = pos[0] + dx, pos[1] + dy
+                    # 边界或被棋子占据均计为包围
                     if not self.board.is_within_bounds(x, y) or self.board.get_piece_at(x, y) is not None:
                         cnt += 1
                 return cnt
@@ -301,11 +307,14 @@ class HiveEnv(gym.Env):
                 self._last_my_queen_dirs = count_surround_dirs(getattr(current_player, 'queen_bee_position', None))
             # --- 终局奖励 ---
             if game_over_status == 1: # Player 1 wins
-                reward = 20.0 if self.current_player_idx == 0 else -20.0
+                # 加入速度奖励，早胜更多
+                speed_bonus = (self.MAX_TURNS - self.turn_count) / self.MAX_TURNS * 10.0
+                reward = (20.0 + speed_bonus) if self.current_player_idx == 0 else -(20.0 + speed_bonus)
                 terminated = True
                 info['reason'] = 'player1_win'
             elif game_over_status == 2: # Player 2 wins
-                reward = 20.0 if self.current_player_idx == 1 else -20.0
+                speed_bonus = (self.MAX_TURNS - self.turn_count) / self.MAX_TURNS * 10.0
+                reward = (20.0 + speed_bonus) if self.current_player_idx == 1 else -(20.0 + speed_bonus)
                 terminated = True
                 info['reason'] = 'player2_win'
             elif game_over_status == 3: # Draw
