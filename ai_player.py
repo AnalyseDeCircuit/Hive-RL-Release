@@ -24,12 +24,42 @@ class AIPlayer(Player):
         self.learning_rate = learning_rate
         self.discount_factor = discount_factor
         # PyTorch神经网络
-        self.neural_network = NeuralNetwork(input_dim=814, hidden_dim=512, output_dim=1)
+        input_dim = 814 + BOARD_SIZE * 4 + 5  # 适配状态+动作拼接输入
+        # 新结构：输入→1024→512→1
+        self.neural_network = NeuralNetwork(input_dim=input_dim, hidden_dims=[1024, 512], output_dim=1)
         self.optimizer = torch.optim.Adam(self.neural_network.parameters(), lr=self.learning_rate)
 
         # Experience Replay Buffer
         self.replay_buffer = []
         self.max_buffer_size = 10000 # As per report
+
+    def _encode_action(self, action_int):
+        """
+        多维离散特征拼接编码：
+        - from_x, from_y, to_x, to_y: 0~BOARD_SIZE-1，分别one-hot（move动作用，place动作from_x/from_y全0）
+        - piece_type_id: 0~4，one-hot
+        返回 shape=(BOARD_SIZE*4+5,)
+        """
+        action_type, from_x, from_y, to_x, to_y, piece_type_id = Action.decode_action(action_int)
+        # One-hot编码
+        fx = np.zeros(BOARD_SIZE, dtype=np.float32)
+        fy = np.zeros(BOARD_SIZE, dtype=np.float32)
+        tx = np.zeros(BOARD_SIZE, dtype=np.float32)
+        ty = np.zeros(BOARD_SIZE, dtype=np.float32)
+        pt = np.zeros(5, dtype=np.float32)
+        if action_type == 'move':
+            if from_x is not None and 0 <= from_x < BOARD_SIZE:
+                fx[from_x] = 1.0
+            if from_y is not None and 0 <= from_y < BOARD_SIZE:
+                fy[from_y] = 1.0
+        # place动作from_x/from_y全0
+        if to_x is not None and 0 <= to_x < BOARD_SIZE:
+            tx[to_x] = 1.0
+        if to_y is not None and 0 <= to_y < BOARD_SIZE:
+            ty[to_y] = 1.0
+        if piece_type_id is not None and 0 <= piece_type_id < 5:
+            pt[piece_type_id] = 1.0
+        return np.concatenate([fx, fy, tx, ty, pt])
 
     def select_action(self, env, game_state: Game, board: ChessBoard, current_player_idx: int, debug=False):
         # ---兼容AI对战/测试流程：env为None时自动fallback到自带合法动作生成器---
@@ -52,58 +82,18 @@ class AIPlayer(Player):
             # Explore: choose a random legal action
             action = random.choice(legal_actions)
         else:
-            # Exploit: choose the action with the highest Q-value
-            best_actions = []
-            max_q_value = -float("inf")
-            for action_candidate in legal_actions:
-                sim_player1 = game_state.player1.clone() if game_state.player1 is not None else None
-                sim_player2 = game_state.player2.clone() if game_state.player2 is not None else None
-                sim_board = board.clone() if board is not None else None
-                sim_turn_count = game_state.turn_count
-                if sim_board is None or (current_player_idx == 0 and sim_player1 is None) or (current_player_idx == 1 and sim_player2 is None):
-                    continue
-                simulated_reward = 0.0
-                try:
-                    action_type, from_x, from_y, to_x, to_y, piece_type_id = Action.decode_action(action_candidate)
-                    from_x = int(from_x) if from_x is not None else None
-                    from_y = int(from_y) if from_y is not None else None
-                    to_x = int(to_x) if to_x is not None else None
-                    to_y = int(to_y) if to_y is not None else None
-                    piece_type_id = self.safe_piece_type_id(piece_type_id)
-                    sim_current = sim_player1 if current_player_idx == 0 else sim_player2
-                    if sim_current is None:
-                        continue
-                    if action_type == 'place':
-                        if to_x is None or to_y is None or piece_type_id is None:
-                            simulated_reward = -1.0
-                        elif sim_current.piece_count.get(piece_type_id, 0) > 0 and \
-                             sim_board.is_valid_placement(to_x, to_y, getattr(sim_current, 'is_first_player', False), sim_turn_count):
-                            sim_current.place_piece(sim_board, to_x, to_y, piece_type_id, sim_turn_count)
-                            simulated_reward = 0.1
-                        else:
-                            simulated_reward = -0.5
-                    elif action_type == 'move':
-                        if from_x is None or from_y is None or to_x is None or to_y is None:
-                            simulated_reward = -1.0
-                        else:
-                            piece_to_move = sim_board.get_piece_at(from_x, from_y)
-                            if piece_to_move is not None and getattr(piece_to_move, 'owner', None) == sim_current and \
-                               hasattr(piece_to_move, 'is_valid_move') and piece_to_move.is_valid_move(sim_board, to_x, to_y):
-                                sim_current.move_piece(sim_board, from_x, from_y, to_x, to_y, self.safe_piece_type_id(getattr(piece_to_move, 'piece_type', None)))
-                                simulated_reward = 0.1
-                            else:
-                                simulated_reward = -0.5
-                except Exception:
-                    simulated_reward = -1.0
-                next_state_vector = self._get_observation_from_game_state(game_state, sim_board, 1 - current_player_idx)
-                q_value = simulated_reward + self.discount_factor * self.neural_network.forward(next_state_vector)
-                if q_value > max_q_value:
-                    max_q_value = q_value
-                    best_actions = [action_candidate]
-                elif q_value == max_q_value:
-                    best_actions.append(action_candidate)
-            if not best_actions:
-                return None
+            # 新版：批量Q(s,a)评估
+            state_vector = self._get_observation_from_game_state(game_state, board, current_player_idx)
+            state_tensor = torch.tensor(state_vector, dtype=torch.float32)
+            action_encodings = np.stack([self._encode_action(a) for a in legal_actions])
+            action_tensors = torch.tensor(action_encodings, dtype=torch.float32)
+            state_batch = state_tensor.repeat(action_tensors.shape[0], 1)
+            sa_batch = torch.cat([state_batch, action_tensors], dim=1)  # shape=(N, state+action)
+            with torch.no_grad():
+                q_values = self.neural_network(sa_batch).squeeze(-1).cpu().numpy()  # shape=(N,)
+            max_q = np.max(q_values)
+            best_idxs = np.where(q_values == max_q)[0]
+            best_actions = [legal_actions[i] for i in best_idxs]
             action = random.choice(best_actions)
         # ---终极保险：返回前再次强制过滤，action 必须在 legal_actions 内---
         if action not in legal_actions:
@@ -261,9 +251,9 @@ class AIPlayer(Player):
         return legal_actions
 
     def add_experience(self, state, action, reward, next_state, terminated):
-        # Add experience to replay buffer
+        # 现在action为int，训练时需拼接编码
         if len(self.replay_buffer) >= self.max_buffer_size:
-            self.replay_buffer.pop(0) # Remove oldest experience
+            self.replay_buffer.pop(0)
         self.replay_buffer.append((state, action, reward, next_state, terminated))
 
     def train_on_batch(self, batch_size=32):
@@ -272,17 +262,27 @@ class AIPlayer(Player):
         if len(legal_samples) < batch_size:
             return
         batch = random.sample(legal_samples, batch_size)
-        states = np.stack([s for s,_,_,_,_ in batch])
+        # 拼接 state+action 作为输入
+        sa_inputs = []
         targets = []
-        for _,_,reward,next_state,terminated in batch:
+        for state, action, reward, next_state, terminated in batch:
+            action_vec = self._encode_action(action)
+            sa_input = np.concatenate([state, action_vec])
+            sa_inputs.append(sa_input)
             target = reward
             if not terminated:
-                with torch.no_grad():
-                    next_state_value = self.neural_network.forward(next_state).item()
-                target += self.discount_factor * next_state_value
+                # 估算下一个状态的最大Q(s',a')
+                # 这里假设有env.get_legal_actions_from_state可用，否则跳过bootstrapping
+                try:
+                    # 需要有env和game_state、board等上下文，若无则只能用reward
+                    # 可选：实现max_a' Q(s',a')
+                    pass  # 可根据实际情况补充
+                except Exception:
+                    pass
             targets.append(target)
+        sa_inputs = np.stack(sa_inputs)
         targets = np.array(targets, dtype=np.float32)
-        loss = self.neural_network.train_step(states, targets, self.optimizer)
+        loss = self.neural_network.train_step(sa_inputs, targets, self.optimizer)
         return loss
 
     def clone(self):

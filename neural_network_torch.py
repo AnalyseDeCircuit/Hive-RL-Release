@@ -4,14 +4,20 @@ import torch.optim as optim
 import numpy as np
 
 class NeuralNetwork(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, device=None):
+    def __init__(self, input_dim, hidden_dims, output_dim, device=None):
         super(NeuralNetwork, self).__init__()
         self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
+        self.hidden_dims = hidden_dims
         self.output_dim = output_dim
         self.device = device or (torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, output_dim)
+        layers = []
+        last_dim = input_dim
+        for h in hidden_dims:
+            layers.append(nn.Linear(last_dim, h))
+            layers.append(nn.ReLU())
+            last_dim = h
+        layers.append(nn.Linear(last_dim, output_dim))
+        self.model = nn.Sequential(*layers)
         self.to(self.device)
 
     def forward(self, state_vector):
@@ -21,8 +27,7 @@ class NeuralNetwork(nn.Module):
         state_vector = state_vector.to(self.device)
         if state_vector.dim() == 1:
             state_vector = state_vector.unsqueeze(0)  # [input_dim] -> [1, input_dim]
-        x = torch.tanh(self.fc1(state_vector))
-        output = self.fc2(x)
+        output = self.model(state_vector)
         return output.squeeze(-1)  # [batch] or scalar
 
     def train_step(self, state_batch, target_batch, optimizer, loss_fn=nn.MSELoss()):

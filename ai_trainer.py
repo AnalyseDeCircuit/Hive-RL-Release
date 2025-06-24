@@ -125,7 +125,15 @@ class AITrainer:
                 (obs, action, reward, next_obs, terminated, episode_reward, episode_steps, illegal_action_count, queenbee_step, info) = sample
                 # 经验回放
                 self.player1_ai.add_experience(obs, action, reward, next_obs, terminated)
-                self.player1_ai.train_on_batch(batch_size)
+                loss = self.player1_ai.train_on_batch(batch_size)
+                # ---loss历史自动保存---
+                if not hasattr(self, 'loss_history'):
+                    self.loss_history = []
+                if loss is not None:
+                    self.loss_history.append(loss)
+                    # 每100步保存一次loss历史
+                    if len(self.loss_history) % 100 == 0:
+                        np.save(os.path.join(self.model_dir, f"{self.run_prefix}_loss_history.npy"), np.array(self.loss_history))
                 # 统计
                 reason = info.get('reason', '') if isinstance(info, dict) else ''
                 if reason == 'max_turns_reached':

@@ -295,7 +295,7 @@ class HiveEnv(gym.Env):
                         if self.board.is_within_bounds(x, y):
                             piece = self.board.get_piece_at(x, y)
                             if piece and piece.owner == current_player:
-                                reward += 0.5
+                                reward += 0.2
             else:
                 self._last_opp_queen_dirs = opp_queen_dirs  # 终局也要同步，防止下局出错
                 self._last_my_queen_dirs = count_surround_dirs(getattr(current_player, 'queen_bee_position', None))
@@ -303,9 +303,11 @@ class HiveEnv(gym.Env):
             if game_over_status == 1: # Player 1 wins
                 reward = 20.0 if self.current_player_idx == 0 else -20.0
                 terminated = True
+                info['reason'] = 'player1_win'
             elif game_over_status == 2: # Player 2 wins
                 reward = 20.0 if self.current_player_idx == 1 else -20.0
                 terminated = True
+                info['reason'] = 'player2_win'
             elif game_over_status == 3: # Draw
                 # 平局奖励根据包围数差异微调
                 my_queen_pos = getattr(current_player, 'queen_bee_position', None)
@@ -320,6 +322,7 @@ class HiveEnv(gym.Env):
                 else:
                     reward = 0.0
                 terminated = True
+                info['reason'] = 'draw'
             if not terminated and self.turn_count >= self.MAX_TURNS:
                 reward = -20.0
                 terminated = True
