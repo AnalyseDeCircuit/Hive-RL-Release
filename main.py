@@ -189,34 +189,57 @@ def game_loop(game: Game):
                     action = input("Enter action (P for place, M for move): ").strip().upper()
                     try:
                         if action == 'P':
-                            x, y, piece_type_str = input("Enter coordinates (x y) and piece type (0-7): ").split()
-                            x, y, piece_type = int(x), int(y), int(piece_type_str)
-                            if piece_type not in PIECE_TYPE_LIST or not all(isinstance(v, int) for v in (x, y, piece_type)):
-                                print("Invalid piece type or coordinates. Please enter valid numbers.")
-                                continue
-                            if hasattr(current_player, 'place_piece') and current_player is not None:
+                            # 放置棋子：内部循环捕获坐标输入错误，不跳出action循环
+                            while True:
+                                coord = input("Enter coordinates (x y) and piece type (0-7): ").split()
+                                if len(coord) != 3:
+                                    print("Please enter exactly three numbers: x y piece_type.")
+                                    continue
+                                try:
+                                    x, y, piece_type = map(int, coord)
+                                except ValueError:
+                                    print("Invalid numbers. Please enter valid integers.")
+                                    continue
+                                if piece_type not in PIECE_TYPE_LIST:
+                                    print("Invalid piece type. Choose 0-7.")
+                                    continue
+                                break
+                            # 执行放置
+                            try:
                                 current_player.place_piece(game.board, x, y, piece_type, game.turn_count)
                                 game.switch_player()
                                 valid_input = True
-                            else:
-                                print("Current player cannot place pieces.")
+                            except Exception as e:
+                                print(f"Invalid move: {e}")
+                                # 放置失败后返回action选择
+                            
                         elif action == 'M':
-                            coords = input("Enter from coordinates (x y) and to coordinates (toX toY): ").split()
-                            if len(coords) != 4:
-                                print("Please enter exactly four numbers for coordinates.")
+                            # 移动棋子：内部循环捕获坐标输入错误
+                            while True:
+                                parts = input("Enter from coordinates (x y) and to coordinates (toX toY): ").split()
+                                if len(parts) != 4:
+                                    print("Please enter exactly four numbers: fromX fromY toX toY.")
+                                    continue
+                                try:
+                                    from_x, from_y, to_x, to_y = map(int, parts)
+                                except ValueError:
+                                    print("Invalid numbers. Please enter valid integers.")
+                                    continue
+                                break
+                            # 检查栈顶棋子归属
+                            moved_piece = game.board.get_piece_at(from_x, from_y)
+                            if moved_piece is None or moved_piece.get_owner() != current_player:
+                                print("Invalid move: no your piece at the source coordinates.")
                                 continue
-                            x, y, to_x, to_y = map(int, coords)
-                            piece_type_str = input("Enter piece type to move (0-7): ").strip()
-                            piece_type = int(piece_type_str)
-                            if piece_type not in PIECE_TYPE_LIST or not all(isinstance(v, int) for v in (x, y, to_x, to_y, piece_type)):
-                                print("Invalid piece type or coordinates. Please enter valid numbers.")
-                                continue
-                            if hasattr(current_player, 'move_piece') and current_player is not None:
-                                current_player.move_piece(game.board, x, y, to_x, to_y, piece_type)
+                            piece_type = moved_piece.get_piece_type()
+                            try:
+                                current_player.move_piece(game.board, from_x, from_y, to_x, to_y, piece_type)  # type: ignore
                                 game.switch_player()
                                 valid_input = True
-                            else:
-                                print("Current player cannot move pieces.")
+                            except Exception as e:
+                                print(f"Invalid move: {e}")
+                                # 移动失败后返回action选择
+                            
                         else:
                             print("Invalid action. Please enter 'P' for place or 'M' for move.")
                     except (ValueError, IndexError, RuntimeError, TypeError) as e:
