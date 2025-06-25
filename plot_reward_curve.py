@@ -69,45 +69,27 @@ illegal = np.load(illegal_file) if os.path.exists(illegal_file) else None
 queenbee = np.load(queenbee_file) if os.path.exists(queenbee_file) else None
 end_stats = np.load(end_stats_file, allow_pickle=True) if os.path.exists(end_stats_file) else None
 
-fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+fig, axes = plt.subplots(1, 3, figsize=(18, 6))  # 修改为1行3列，以绘制Reward、End Stats和分布图
 # 1. Reward 曲线
-ax = axes[0,0]
+ax = axes[0]
 ax.plot(rewards, label="Episode Reward", alpha=0.5)
 if len(rewards) >= window:
     avg = np.convolve(rewards, np.ones(window)/window, mode='valid')
     ax.plot(range(window-1, len(rewards)), avg, label=f"Moving Avg({window})", color='red')
+
+# 添加累计平均奖励曲线
+cumsum = np.cumsum(rewards)
+cumavg = cumsum / (np.arange(len(rewards)) + 1)
+ax.plot(cumavg, label="Cumulative Avg Reward", color='green', alpha=0.7)
+
 ax.set_xlabel("Episode")
 ax.set_ylabel("Reward")
 ax.set_title("Reward Curve")
 ax.legend()
 ax.grid(True)
 
-# 2. 步数/非法动作/主动落蜂后步数
-ax = axes[0,1]
-plotted = False
-# 统计全部按每局一采样，横坐标与 reward 对齐
-if steps is not None and len(steps) > 0:
-    x = np.arange(len(steps))
-    ax.plot(x, steps, label="Steps per Episode", alpha=0.5)
-    plotted = True
-if illegal is not None and len(illegal) > 0:
-    x = np.arange(len(illegal))
-    ax.plot(x, illegal, label="Illegal Actions per Episode", alpha=0.5)
-    plotted = True
-if queenbee is not None and len(queenbee) > 0:
-    x = np.arange(len(queenbee))
-    ax.plot(x, queenbee, label="QueenBee Place Step", alpha=0.5)
-    plotted = True
-if not plotted:
-    ax.text(0.5, 0.5, "No steps/illegal/queenbee data", ha='center', va='center', fontsize=12)
-ax.set_xlabel("Episode")
-ax.set_ylabel("Count")
-ax.set_title("Steps / Illegal Actions / QueenBee Step")
-ax.legend()
-ax.grid(True)
-
-# 3. 终局统计累计折线图
-ax = axes[1,0]
+# 2. 终局统计累计折线图
+ax = axes[1]
 if end_stats is not None and len(end_stats) > 0:
     labels = list(end_stats[0].keys())
     data = {k: [d[k] for d in end_stats] for k in labels}
@@ -125,8 +107,8 @@ if end_stats is not None and len(end_stats) > 0:
 else:
     ax.set_visible(False)
 
-# 4. reward分布直方图（异常分析）
-ax = axes[1,1]
+# 3. reward分布直方图（异常分析）
+ax = axes[2]  # 修改为一行三列中的第三个子图
 if rewards is not None and len(rewards) > 0:
     REWARD_ABS_LIMIT = 200
     bins = np.linspace(min(-REWARD_ABS_LIMIT, np.min(rewards)), max(REWARD_ABS_LIMIT, np.max(rewards)), 41)

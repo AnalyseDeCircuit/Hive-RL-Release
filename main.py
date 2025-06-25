@@ -30,7 +30,7 @@ def display_main_menu():
     print("\033[97m1. Human vs Human\033[0m")
     print("\033[97m2. Human vs AI\033[0m")
     print("\033[97m3. AI Training\033[0m")
-    print("\033[97m4. Evaluate AI(Not available now)\033[0m")
+    print("\033[97m4. Evaluate AI & Plots\033[0m")
     
     # 亮红色退出选项
     print("\033[91m5. Exit Game\033[0m")
@@ -348,14 +348,69 @@ def ai_training_loop():
     trainer.train()
     input("\nAI training complete. Press Enter to return to main menu...")
 
-def ai_evaluation_loop():
-    print("\n--- AI Evaluation ---")
-    # DLC option for evaluation
-    use_dlc = input("Enable DLC pieces for evaluation? (y/n) [n]: ").strip().lower() == 'y'
-    evaluator = AIEvaluator(use_dlc=use_dlc)
-    num_games = int(input("Enter number of evaluation games (e.g., 100): "))
-    evaluator.evaluate(num_games=num_games)
-    input("\nAI evaluation complete. Press Enter to return to main menu...")
+def evaluate_menu():
+    clear_screen()
+    while True:
+        clear_screen()
+        print("\n--- Evaluate AI & Plots ---")
+        print("1. Plot Reward Curve")
+        print("2. Plot Loss Curve")
+        print("3. Plot Win-Rate Curve")
+        print("4. Plot Stats Curve")
+        print("5. Back to Main Menu")
+        choice = input("Choose an option (1-5): ").strip()
+        if choice == '1':
+            # Plot Reward Curve logic
+            model_path = select_model()
+            if model_path:
+                model_dir = os.path.dirname(model_path)
+                prefix = os.path.basename(model_path).split("_final.npz")[0]
+                reward_file = os.path.join(model_dir, f"{prefix}_reward_history.npy")
+                print(f"Running plot_reward_curve.py for {reward_file}...")
+                os.system(f"python plot_reward_curve.py \"{reward_file}\"")
+            else:
+                print("No model selected.")
+            input("Press Enter to continue...")
+        elif choice == '2':
+            # Plot Loss Curve logic
+            model_path = select_model()
+            if model_path:
+                model_dir = os.path.dirname(model_path)
+                prefix = os.path.basename(model_path).split("_final.npz")[0]
+                loss_file = os.path.join(model_dir, f"{prefix}_loss_history.npy")
+                print(f"Running plot_loss_curve.py for {loss_file}...")
+                os.system(f"python plot_loss_curve.py \"{loss_file}\"")
+            else:
+                print("No model selected.")
+            input("Press Enter to continue...")
+        elif choice == '3':
+            # Plot Win-Rate Curve logic
+            model_path = select_model()
+            if model_path:
+                model_dir = os.path.dirname(model_path)
+                prefix = os.path.basename(model_path).split("_final.npz")[0]
+                end_stats_file = os.path.join(model_dir, f"{prefix}_end_stats_history.npy")
+                print(f"Running plot_win_rate_curve.py for {end_stats_file}...")
+                os.system(f"python plot_win_rate_curve.py \"{end_stats_file}\"")
+            else:
+                print("No model selected.")
+            input("Press Enter to continue...")
+        elif choice == '4':
+            # Plot Stats Curve logic
+            model_path = select_model()
+            if model_path:
+                model_dir = os.path.dirname(model_path)
+                prefix = os.path.basename(model_path).split("_final.npz")[0]
+                print(f"Running plot_stats_curve.py for stats in {model_dir}...")
+                os.system(f"python plot_stats_curve.py \"{model_dir}\"")
+            else:
+                print("No model selected.")
+            input("Press Enter to continue...")
+        elif choice == '5':
+            break
+        else:
+            print("Invalid choice. Please choose a number between 1 and 5.")
+            input("Press Enter to continue...")
 
 def main():
     game = Game.get_instance()
@@ -365,8 +420,10 @@ def main():
 
         if main_menu_choice == '1':
             player1_name, player2_name = get_player_names()
-            player1 = Player(player1_name, is_first_player=True)
-            player2 = Player(player2_name, is_first_player=False)
+            # DLC option for Human vs Human
+            use_dlc = input("Enable DLC pieces for both players? (y/n) [n]: ").strip().lower() == 'y'
+            player1 = Player(player1_name, is_first_player=True, use_dlc=use_dlc)
+            player2 = Player(player2_name, is_first_player=False, use_dlc=use_dlc)
             game.initialize_game(player1, player2)
             game_loop(game)
         elif main_menu_choice == '2':
@@ -374,7 +431,7 @@ def main():
         elif main_menu_choice == '3':
             ai_training_loop()
         elif main_menu_choice == '4':
-            ai_evaluation_loop()
+            evaluate_menu()
         elif main_menu_choice == '5':
             print("Exiting game. Goodbye!")
             break
