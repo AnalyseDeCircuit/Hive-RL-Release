@@ -304,7 +304,13 @@ class AIPlayer(Player):
                 cloned_player.queen_bee_position = self.queen_bee_position
         else:
             cloned_player.queen_bee_position = None
-        # 神经网络等可选属性如需深拷贝可补充
+        # Copy neural network parameters (for PyTorch implementation)
+        try:
+            # 使用 state_dict 复制所有模型参数
+            cloned_player.neural_network.load_state_dict(self.neural_network.state_dict())
+        except Exception:
+            # 如果是 numpy 实现则忽略
+            pass
         return cloned_player
 
     def update_epsilon(self, episode, decay_every=1000, decay_rate=0.5, min_epsilon=0.05):

@@ -329,7 +329,7 @@ def ai_training_loop():
     mode = input("输入选项(1-2，回车默认1): ").strip()
     trainer = None
     if mode == '2':
-        # 尝试断点续训
+        # 断点续训逻辑
         model_dirs = sorted([d for d in glob.glob("models/*") if os.path.isdir(d)])
         if not model_dirs:
             print("未找到任何历史AI模型，切换到新建训练。")
@@ -367,9 +367,30 @@ def ai_training_loop():
         # 新建训练：询问DLC
         use_dlc = input("Enable DLC pieces for training? (y/n) [n]: ").strip().lower() == 'y'
         trainer = AITrainer(force_new=True, use_dlc=use_dlc)
-    print("\n训练将无限进行，请随时按 Ctrl+C 终止并自动保存断点。\n")
-    trainer.train()
-    input("\nAI training complete. Press Enter to return to main menu...")
+
+    # 训练模式子菜单：选择训练类型
+    print("\n请选择训练类型：")
+    print("1. 并行采样基础训练 (Parallel Sampling)")
+    print("2. 自我对弈精炼训练 (Self-Play)")
+    print("3. 混合训练 (先并行采样，Ctrl+C后再自我对弈，推荐8：2)")
+    train_type = input("输入选项(1-3，回车默认1): ").strip()
+    if train_type == '2':
+        # 自我对弈训练
+        episodes = input("输入自我对弈训练局数(回车默认10000): ").strip()
+        num_eps = int(episodes) if episodes.isdigit() else 10000
+        trainer.self_play_train(num_episodes=num_eps)
+    elif train_type == '3':
+        # 混合训练：先并行采样，再自我对弈
+        print("开始并行采样基础训练...")
+        trainer.train()
+        episodes = input("输入自我对弈精炼训练局数(回车默认10000): ").strip()
+        num_eps = int(episodes) if episodes.isdigit() else 10000
+        trainer.self_play_train(num_episodes=num_eps)
+    else:
+        # 并行采样基础训练
+        trainer.train()
+    input("\n训练结束，按回车返回主菜单...")
+    return
 
 def evaluate_menu():
     clear_screen()

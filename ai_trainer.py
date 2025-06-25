@@ -245,6 +245,44 @@ class AITrainer:
         self.player1_ai.neural_network.load_model(self.model_path)
         self.player2_ai.neural_network.load_model(self.model_path) # Both players use the same model
 
+    def self_play_train(self, num_episodes, batch_size=32, copy_every=100, train_batches_per_episode=3):
+        """Self-play training: target network vs explorer network with periodic parameter copy."""
+        # 初始化目标网络和探险网络
+        target_agent = self.player1_ai
+        explorer_agent = target_agent.clone()
+        # 探险网络更高探索率
+        explorer_agent.epsilon = min(1.0, target_agent.epsilon * 1.5)
+        # 自我对弈循环
+        for episode in range(1, num_episodes + 1):
+            obs, info = self.env.reset()
+            terminated = False
+            truncated = False
+            # 每步采样
+            while not terminated and not truncated:
+                # 根据当前玩家索引选择网络：先手使用target，后手使用explorer
+                if self.env.current_player_idx == 0:
+                    current = target_agent
+                else:
+                    current = explorer_agent
+                # 选择动作并执行
+                action = current.select_action(self.env, self.env.game, self.env.board, self.env.current_player_idx)
+                next_obs, reward, terminated, truncated, info = self.env.step(action)
+                # 送入经验池
+                target_agent.add_experience(obs, action, reward, next_obs, terminated)
+                explorer_agent.add_experience(obs, action, reward, next_obs, terminated)
+                obs = next_obs
+            # 训练目标网络，每集后统一进行小批量训练，减少频繁调用开销
+            for _ in range(train_batches_per_episode):
+                target_agent.train_on_batch(batch_size)
+            # 周期性复制目标网络到探险网络
+            if episode % copy_every == 0:
+                explorer_agent = target_agent.clone()
+                explorer_agent.epsilon = min(1.0, target_agent.epsilon * 1.5)
+                print(f"[Self-Play] 复制目标网络参数到探险网络 (Episode {episode})")
+            print(f"[Self-Play] Episode {episode}/{num_episodes} 完成.")
+        # 训练结束保存模型与统计
+        self._save_checkpoint()
+
 
 
 
