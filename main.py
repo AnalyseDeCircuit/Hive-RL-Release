@@ -4,6 +4,7 @@ from game import Game
 from player import Player
 from ai_player import AIPlayer
 from ai_trainer import AITrainer
+import json  # 用于 ensemble 配置保存
 from ai_evaluator import AIEvaluator
 import os
 import glob
@@ -372,20 +373,41 @@ def ai_training_loop():
     print("\n请选择训练类型：")
     print("1. 并行采样基础训练 (Parallel Sampling)")
     print("2. 自我对弈精炼训练 (Self-Play)")
-    print("3. 混合训练 (先并行采样，Ctrl+C后再自我对弈，推荐8：2)")
-    train_type = input("输入选项(1-3，回车默认1): ").strip()
+    print("3. Ensemble 投票训练 (训练多模型用于投票)")
+    print("4. 对抗式鲁棒化训练 (Adversarial Training)")
+    print("5. 课程学习 (Curriculum Learning)")
+    train_type = input("输入选项(1-5，回车默认1): ").strip()
     if train_type == '2':
         # 自我对弈训练
         episodes = input("输入自我对弈训练局数(回车默认10000): ").strip()
         num_eps = int(episodes) if episodes.isdigit() else 10000
         trainer.self_play_train(num_episodes=num_eps)
     elif train_type == '3':
-        # 混合训练：先并行采样，再自我对弈
-        print("开始并行采样基础训练...")
-        trainer.train()
-        episodes = input("输入自我对弈精炼训练局数(回车默认10000): ").strip()
+        # Ensemble 投票训练
+        count = input("输入投票模型数量 N (回车默认3): ").strip()
+        N = int(count) if count.isdigit() else 3
+        ensemble_paths = []
+        for i in range(N):
+            print(f"开始训练第 {i+1}/{N} 个模型...")
+            sub_trainer = AITrainer(force_new=True, use_dlc=use_dlc)
+            sub_trainer.train()
+            path = os.path.join(sub_trainer.model_dir, f"{sub_trainer.run_prefix}_final.npz")
+            ensemble_paths.append(path)
+        # 保存 ensemble 配置
+        cfg_path = os.path.join("models", "ensemble.json")
+        with open(cfg_path, 'w') as f:
+            json.dump(ensemble_paths, f)
+        print(f"Ensemble 配置已保存到 {cfg_path}")
+    elif train_type == '4':
+        # 对抗式鲁棒化训练
+        episodes = input("输入对抗训练局数(回车默认10000): ").strip()
         num_eps = int(episodes) if episodes.isdigit() else 10000
-        trainer.self_play_train(num_episodes=num_eps)
+        trainer.adversarial_train(num_episodes=num_eps)
+    elif train_type == '5':
+        # 课程学习训练
+        episodes = input("每阶段训练局数(回车默认5000): ").strip()
+        ep_per = int(episodes) if episodes.isdigit() else 5000
+        trainer.curriculum_train(episodes_per_level=ep_per)
     else:
         # 并行采样基础训练
         trainer.train()

@@ -320,5 +320,40 @@ class AIPlayer(Player):
         if episode % decay_every == 0 and self.epsilon > min_epsilon:
             self.epsilon = max(self.epsilon * decay_rate, min_epsilon)
 
+# ============ 新增：集成多模型投票类 ============
+from typing import List
+
+class EnsembleAIPlayer:
+    """
+    多模型投票AI：持有多套AIPlayer实例，决策时对各模型Q值求平均/加权后选动作。
+    """
+    def __init__(self, agents: List[AIPlayer], weights=None, epsilon=0.05):
+        self.agents = agents
+        self.weights = weights or [1.0] * len(agents)
+        self.epsilon = epsilon
+
+    def select_action(self, env, game_state, board, current_player_idx, debug=False):
+        legal = env.get_legal_actions()
+        if not legal:
+            return None
+        # 随机探索
+        if random.random() < self.epsilon:
+            return random.choice(legal)
+        # 计算加权平均Q值
+        avg_scores = []
+        for a in legal:
+            score = 0.0
+            for w, agent in zip(self.weights, self.agents):
+                # 单模型批量评估
+                state_vec = agent._get_observation_from_game_state(game_state, board, current_player_idx)
+                action_vec = agent._encode_action(a)
+                with agent.neural_network._no_grad():
+                    q = agent.neural_network.forward(np.concatenate([state_vec, action_vec]))
+                score += w * q
+            avg_scores.append(score / sum(self.weights))
+        # 取最大平均Q对应动作
+        best_idx = int(np.argmax(avg_scores))
+        return legal[best_idx]
+
 
 

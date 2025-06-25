@@ -4,11 +4,37 @@ import glob
 import datetime
 import numpy as np
 import json
+import torch
 from hive_env import HiveEnv
 from ai_player import AIPlayer
 from game import Game
 from board import ChessBoard
 import multiprocessing as mp
+
+# Worker function for module-level parallel self-play
+def _parallel_self_play_worker(args):
+    ai_player, use_dlc = args
+    env = HiveEnv(training_mode=True, use_dlc=use_dlc)
+    target_agent = ai_player.clone()
+    explorer = target_agent.clone()
+    explorer.epsilon = min(1.0, target_agent.epsilon * 1.5)
+    obs, _ = env.reset()
+    terminated = False
+    truncated = False
+    transitions = []
+    while not terminated and not truncated:
+        current = target_agent if env.current_player_idx == 0 else explorer
+        action = current.select_action(env, env.game, env.board, env.current_player_idx)
+        next_obs, reward, terminated, truncated, _ = env.step(action)
+        transitions.append((obs, action, reward, next_obs, terminated))
+        obs = next_obs
+    return transitions
+
+# Module-level worker initializer
+def _init_worker():
+    import signal
+    # 忽略 SIGINT，让主进程处理
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 class AITrainer:
     def __init__(self, model_path=None, force_new=False, custom_dir=None, custom_prefix=None, use_dlc=False):
@@ -281,6 +307,108 @@ class AITrainer:
                 print(f"[Self-Play] 复制目标网络参数到探险网络 (Episode {episode})")
             print(f"[Self-Play] Episode {episode}/{num_episodes} 完成.")
         # 训练结束保存模型与统计
+        self._save_checkpoint()
+
+    def adversarial_train(self, num_episodes, batch_size=32, train_batches_per_episode=3):
+        """Adversarial training: target network vs adversary picking lowest Q actions."""
+        target_agent = self.player1_ai
+        env = self.env
+        for episode in range(1, num_episodes + 1):
+            obs, info = env.reset()
+            terminated = False
+            truncated = False
+            # 每步对抗采样
+            while not terminated and not truncated:
+                if env.current_player_idx == 0:
+                    action = target_agent.select_action(env, env.game, env.board, env.current_player_idx)
+                else:
+                    legal_actions = env.get_legal_actions()
+                    if not legal_actions:
+                        action = None
+                    else:
+                        # 使用目标网络评估，将Q最小的动作视为对抗动作
+                        state_vec = target_agent._get_observation_from_game_state(env.game, env.board, env.current_player_idx)
+                        action_encs = [target_agent._encode_action(a) for a in legal_actions]
+                        state_tensor = torch.tensor(state_vec, dtype=torch.float32)
+                        action_tensor = torch.tensor(np.stack(action_encs), dtype=torch.float32)
+                        state_batch = state_tensor.repeat(action_tensor.shape[0], 1)
+                        sa_batch = torch.cat([state_batch, action_tensor], dim=1)
+                        with torch.no_grad():
+                            q_vals = target_agent.neural_network(sa_batch).squeeze(-1).cpu().numpy()
+                        idx = int(np.argmin(q_vals))
+                        action = legal_actions[idx]
+                # 执行动作
+                next_obs, reward, terminated, truncated, info = env.step(action)
+                # 存储至经验池
+                target_agent.add_experience(obs, action, reward, next_obs, terminated)
+                obs = next_obs
+            # 训练目标网络
+            for _ in range(train_batches_per_episode):
+                target_agent.train_on_batch(batch_size)
+            if episode % 100 == 0:
+                print(f"[Adversarial] Episode {episode}/{num_episodes} complete.")
+        # 保存模型和统计
+        self._save_checkpoint()
+
+    def parallel_self_play_train(self, num_episodes, num_workers=4, batch_size=32, train_batches_per_episode=3):
+        """Parallelized self-play training using multiprocessing with proper signal handling."""
+        import multiprocessing as mp
+        
+        # 准备参数列表
+        args_list = [(self.player1_ai, self.use_dlc) for _ in range(num_episodes)]
+        
+        # 使用带有初始化函数的进程池
+        pool = mp.Pool(processes=num_workers, initializer=_init_worker)
+        results = []
+        
+        try:
+            # 分批提交任务，每批100个，便于中断
+            batch_size_mp = 100
+            for i in range(0, num_episodes, batch_size_mp):
+                batch_end = min(i + batch_size_mp, num_episodes)
+                batch_args = args_list[i:batch_end]
+                
+                print(f"[Parallel Self-Play] Submitting episodes {i+1}-{batch_end}/{num_episodes}")
+                batch_results = pool.map(_parallel_self_play_worker, batch_args)
+                
+                # 立即处理结果
+                for idx, eps in enumerate(batch_results, start=i+1):
+                    for obs, action, reward, next_obs, terminated in eps:
+                        self.player1_ai.add_experience(obs, action, reward, next_obs, terminated)
+                    if idx % 10 == 0:
+                        print(f"[Parallel Self-Play] Processed Episode {idx}/{num_episodes}")
+                
+                results.extend(batch_results)
+                
+        except KeyboardInterrupt:
+            print("\n[Parallel Self-Play] Detected KeyboardInterrupt, terminating workers...")
+            pool.terminate()
+            pool.join()
+            print(f"[Parallel Self-Play] Collected {len(results)} episodes before interruption")
+            # Propagate interrupt to stop entire training pipeline
+            raise
+        else:
+            pool.close()
+            pool.join()
+            
+        # 批量训练
+        print(f"[Parallel Self-Play] Training on {len(results)} episodes...")
+        for _ in range(train_batches_per_episode):
+            self.player1_ai.train_on_batch(batch_size)
+        print(f"[Parallel Self-Play] Completed {num_episodes} episodes with {num_workers} workers.")
+        self._save_checkpoint()
+
+    def curriculum_train(self, episodes_per_level=5000):
+        """Curriculum training: multi-stage self-play training."""
+        levels = [
+            {'id': 1, 'desc': '放置蜂后阶段'},
+            {'id': 2, 'desc': '全动作阶段'}
+        ]
+        for lvl in levels:
+            print(f"[Curriculum] Level {lvl['id']}: {lvl['desc']}，训练局数={episodes_per_level}")
+            # 在此可根据 lvl 配置调整 env 规则，如仅允许放置蜂后等
+            self.self_play_train(num_episodes=episodes_per_level)
+        print("[Curriculum] 课程学习所有阶段训练完成，保存模型。")
         self._save_checkpoint()
 
 

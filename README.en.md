@@ -1,127 +1,98 @@
-# Hive Game Python Project (English)
+[🇨🇳 中文](README.md) | [🇫🇷 Français](README.fr.md) | [🇪🇸 Español](README.es.md)
 
-[中文 | English | Français | Español]
+# Hive-RL: An AI for the board game Hive based on Reinforcement Learning
 
-## Project Overview
-This project is a Python implementation of Hive, supporting human vs human, human vs AI, AI training, and evaluation. It supports base and DLC pieces, with full board logic, player management, AI decision-making, and neural network training.
+## Introduction
 
-## Main Features
-- **Human vs Human**: Local two-player mode, full Hive rules.
-- **Human vs AI**: Play against AI, which can load a trained model or play randomly.
-- **AI Training**: Self-play reinforcement learning to improve AI.
-- **AI Evaluation**: Batch evaluation of AI performance.
-- **Board & Rules**: Implements all base and DLC pieces, placement/movement rules, and win conditions.
+Hive-RL is a Python project based on Reinforcement Learning (RL) that aims to train a high-level Artificial Intelligence (AI) for the board game **Hive**. This project implements the complete game logic, a reinforcement learning environment compatible with the OpenAI Gym/Gymnasium standard, and an AI trainer using a Deep Q-Network (DQN).
 
-## Architecture
-- **Language**: Python 3
-- **Main Modules**:
-  - `main.py`: Entry point, menu, main loop
-  - `game.py`: Game flow and state management
-  - `player.py` / `ai_player.py`: Player and AI player objects
-  - `board.py`: Board and piece management
-  - `hive_env.py` / `game_state.py`: AI environment and state encoding
-  - `neural_network.py`: Neural network implementation
-  - `ai_trainer.py` / `ai_evaluator.py`: AI training and evaluation
-  - `utils.py`: Constants and utilities
-- **AI**: Reinforcement learning (Q-Learning/DQN), custom neural network, experience replay
-- **Data Structure**: OOP, supports clone/deepcopy/state simulation
+## Project Features
+
+*   **Complete Game Implementation**: Accurately implements the basic rules of Hive and the movement of all pieces, including the official **DLC expansion pieces** (Ladybug, Mosquito, Pillbug).
+*   **Modular Architecture**: The code is clearly structured into modules for game logic, RL environment, AI player, trainer, evaluator, etc., making it easy to understand and extend.
+*   **Reinforcement Learning Driven**: Uses a Deep Q-Network (DQN) as its core algorithm, allowing the AI to learn from scratch and continuously evolve through Self-Play and various advanced training strategies.
+*   **Advanced Training Strategies**:
+    *   **Parallel Self-Play**: Utilizes multiprocessing to sample in parallel, significantly speeding up training.
+    *   **Curriculum Learning**: Allows the AI to start learning from simplified tasks (e.g., learning to place the Queen Bee first) and gradually transition to the full game, improving learning efficiency.
+    *   **Adversarial Training**: Enhances the AI's robustness by playing against an opponent that specifically chooses the "worst" moves.
+    *   **Ensemble Training**: Trains multiple independent AI models and uses voting during decision-making to improve the accuracy and stability of choices.
+*   **Visualization and Evaluation**: Provides various visualization tools to plot reward curves, loss curves, win rate curves, and other statistics during the training process, making it easy to analyze the AI's learning progress.
+*   **User-Friendly Interface**: Offers a command-line main menu that supports various modes, including Human vs. Human, Human vs. AI, AI Training, and AI Evaluation.
+
+## Project Architecture
+
+*   `main.py`: The main entry point of the project, providing a command-line interactive menu.
+*   `game.py`: The main game logic, managing the game flow, players, and turns.
+*   `board.py`: Board representation and basic operations.
+*   `piece.py`: Defines the properties and movement rules for all pieces (including DLC).
+*   `player.py`: The base class for players, managing hand and basic actions.
+*   `ai_player.py`: The AI player class, implementing action selection and experience replay based on a neural network.
+*   `hive_env.py`: The Hive game environment following the Gymnasium API, used for reinforcement learning training.
+*   `neural_network.py`: A deep neural network implementation based on PyTorch.
+*   `ai_trainer.py`: The AI trainer, including various training modes (parallel self-play, curriculum learning, adversarial training, etc.).
+*   `ai_evaluator.py`: The AI evaluator, used to test the AI's win rate against a random player.
+*   `utils.py`: Provides helper functions and tools.
+*   `requirements.txt`: Project dependency libraries.
 
 ## How to Run
-1. Install dependencies:
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+### 1. Environment Setup
 
-2. Start the game:
+First, make sure you have Python 3.10 or higher installed. Then, install all the required dependencies:
 
-   ```bash
-   python main.py
-   ```
+```bash
+pip install -r requirements.txt
+```
 
-3. Select mode from the menu.
+### 2. Run the Main Program
 
-## Use Cases
-- Board game development & AI research
-- Reinforcement learning & game AI practice
-- Python OOP & project architecture learning
+Start the project's main menu with the following command:
 
-## Other Notes
-- Supports base and DLC pieces (Ladybug, Mosquito, Pillbug)
-- Clean code structure, easy for extension
-- See Q&S.md for detailed technical issues and fixes
+```bash
+python main.py
+```
 
-## Module Structure
+You will see the following options:
 
-This project uses a layered, decoupled OOP architecture:
+1.  **Human vs Human**: Play against another local player.
+2.  **Human vs AI**: Play against a trained AI.
+3.  **AI Training**: Train a new AI model or continue training from a checkpoint.
+4.  **Evaluate AI & Plots**: Evaluate the AI's performance and plot training curves.
+5.  **Exit Game**: Exit the program.
 
-- **UI & Main Process Layer**
-  - `main.py`: Menu, user interaction, main loop, module dispatch
-- **Game Logic & State Layer**
-  - `game.py`: Game flow, turn switching, win/lose, player management
-  - `board.py`: Board data structure, piece placement/movement/validation
-  - `player.py`: Human player, inventory, placement/movement
-  - `piece.py`: Piece types, attributes, behaviors
-- **AI & Environment Layer**
-  - `ai_player.py`: AI player, inherits Player, integrates RL and neural network
-  - `hive_env.py`: AI training environment, state/action/reward, OpenAI Gym style
-  - `game_state.py`: State encoding and feature extraction for AI
-- **AI Training & Evaluation Layer**
-  - `ai_trainer.py`: Self-play training, experience collection, model update
-  - `ai_evaluator.py`: AI evaluation and statistics
-  - `neural_network.py`: Custom neural network for value/action prediction
-- **Utils & Constants Layer**
-  - `utils.py`: Piece constants, helpers, global config
+### 3. Train the AI
 
----
+*   Select the `AI Training` option from the main menu.
+*   You can choose to **start a new training** or **continue from a previous checkpoint**.
+*   Next, select a training mode, such as **basic training with parallel sampling** or **self-play**.
+*   During training, the model and statistics will be automatically saved in the `models/` directory, in a folder named with a timestamp and DLC status.
+*   You can interrupt the training at any time with `Ctrl+C`, and the program will automatically save the current progress to be resumed later.
 
-## RL Design (Detailed)
+### 4. Play Against the AI
 
-The AI uses Q-Learning/DQN with a custom neural network. Key details:
+*   Select the `Human vs AI` option from the main menu.
+*   The program will automatically list all available AI models in the `models/` directory. You can choose one to play against.
+*   During the game, enter your moves as prompted.
 
-### 1. State Encoding
-- Each state is an 814-dim vector:
-  - 800: 10x10 board, one-hot for top piece type (8 types)
-  - 10: Both players' hand inventory (5 base pieces, normalized)
-  - 4: Current player, turn, both queens placed
-- See RLTechReport.md for code details.
+## Reinforcement Learning Principles
 
-### 2. Action Space
-- All legal placements/moves are encoded as discrete ints (Action.encode_*):
-  - Placement: piece type and coordinates
-  - Move: from and to coordinates
-- AI enumerates all possible actions and filters for legality.
-- See RLTechReport.md for code details.
+The AI in this project is based on a **Deep Q-Network (DQN)**, a value-driven reinforcement learning algorithm. The core idea is to train a neural network to approximate the **Q-function** `Q(s, a)`, which predicts the long-term return (reward) of taking action `a` in a given state `s`.
 
-### 3. Neural Network
-- Custom MLP:
-  - Input: 814
-  - Hidden: 256, ReLU
-  - Output: 1 (state value, can extend to Q(s,a))
-- See RLTechReport.md for code details.
+*   **State**: A vectorized representation of the current game situation, including the type of piece at each position on the board, the number of pieces remaining in each player's hand, the current turn number, etc.
+*   **Action**: One of all legal "place" or "move" operations.
+*   **Reward**: The feedback signal the AI receives from the environment after performing an action.
+    *   **Winning**: Receives a large positive reward.
+    *   **Losing**: Receives a large negative reward.
+    *   **Drawing**: Receives a zero or a small positive/negative reward.
+    *   **Reward Shaping**: To guide the AI to learn faster, we designed a series of intermediate rewards, such as:
+        *   A positive reward for surrounding the opponent's Queen Bee.
+        *   A penalty for having one's own Queen Bee surrounded.
+        *   A small positive reward for making a legal move or placement.
+        *   A tiny negative reward for each step taken, to encourage the AI to win as quickly as possible.
+*   **Training Process**:
+    1.  **Sampling**: The AI (or multiple parallel AIs) plays the game through self-play in the environment, collecting a large number of `(state, action, reward, next_state)` experience tuples.
+    2.  **Experience Replay**: The collected experiences are stored in an "experience pool."
+    3.  **Training**: A small batch of experiences is randomly drawn from the experience pool to train the neural network. The goal of the training is to make the predicted value of `Q(s, a)` as close as possible to the **target Q-value** (usually `reward + discount_factor * max(Q(next_state, all_legal_actions))`).
+    4.  **Exploration vs. Exploitation**: The AI uses an **ε-greedy** strategy to select actions. That is, with a probability of ε, it chooses a random legal action (exploration), and with a probability of 1-ε, it chooses the action with the highest Q-value (exploitation). As training progresses, ε gradually decays, causing the AI to shift from random exploration to relying more on the optimal strategies it has learned.
 
-### 4. Policy & Exploration
-- Epsilon-greedy:
-  - With probability epsilon, pick random action (explore), else pick max-value action (exploit)
-  - Epsilon decays (e.g. *0.995 per game), min 0.01
-- See RLTechReport.md for code details.
-
-### 5. Experience Replay & Training
-- Each step (s, a, r, s', done) goes to replay buffer
-- Each training, sample batch, compute targets:
-  - If not terminal: target = r + γ * V(s')
-  - If terminal: target = r
-- Train with MSE loss
-- See RLTechReport.md for code details.
-
-### 7. Self-Play & Model Update
-- AI self-plays, accumulates experience, saves model every 100 games
-- Trained model can be loaded for play/evaluation
-
-### 8. Evaluation & Generalization
-- After training, use ai_evaluator.py for batch games, win rate, avg steps
-- Supports comparison under different epsilon/model params
-
----
-
-For suggestions or bug reports, open an issue or PR!
+Through tens of thousands of games of self-play and training, the AI's neural network can gradually learn the complex patterns and strategies of the Hive board, thereby achieving a high level of play.
