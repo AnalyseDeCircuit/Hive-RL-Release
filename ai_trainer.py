@@ -3,6 +3,7 @@ import os
 import glob
 import datetime
 import numpy as np
+import json
 from hive_env import HiveEnv
 from ai_player import AIPlayer
 from game import Game
@@ -10,13 +11,17 @@ from board import ChessBoard
 import multiprocessing as mp
 
 class AITrainer:
-    def __init__(self, model_path=None, force_new=False, custom_dir=None, custom_prefix=None):
+    def __init__(self, model_path=None, force_new=False, custom_dir=None, custom_prefix=None, use_dlc=False):
+        self.use_dlc = use_dlc  # 是否启用DLC棋子
         self.base_model_dir = "./models"
         if not os.path.exists(self.base_model_dir):
             os.makedirs(self.base_model_dir)
         if force_new:
             # 强制新建唯一目录
-            self.run_prefix = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            # 根据DLC标记添加后缀
+            suffix = 'dlc' if self.use_dlc else 'nodlc'
+            self.run_prefix = f"{timestamp}_{suffix}"
             self.model_dir = os.path.join(self.base_model_dir, self.run_prefix)
             os.makedirs(self.model_dir, exist_ok=True)
             print(f"[新训练] 新建模型目录: {self.model_dir}")
@@ -32,14 +37,17 @@ class AITrainer:
                 self.run_prefix = self.latest_prefix
                 print(f"[断点续训] 检测到历史断点: {self.model_dir}, 前缀: {self.run_prefix}")
             else:
-                self.run_prefix = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                suffix = 'dlc' if self.use_dlc else 'nodlc'
+                self.run_prefix = f"{timestamp}_{suffix}"
                 self.model_dir = os.path.join(self.base_model_dir, self.run_prefix)
                 os.makedirs(self.model_dir, exist_ok=True)
                 print(f"[新训练] 新建模型目录: {self.model_dir}")
         self.model_path = model_path
-        self.env = HiveEnv(training_mode=True)
-        self.player1_ai = AIPlayer("AI_Player1", is_first_player=True, epsilon=1.0)
-        self.player2_ai = AIPlayer("AI_Player2", is_first_player=False, epsilon=1.0)
+        # 初始化环境和AIPlayer，传入DLC选项
+        self.env = HiveEnv(training_mode=True, use_dlc=self.use_dlc)
+        self.player1_ai = AIPlayer("AI_Player1", is_first_player=True, epsilon=1.0, use_dlc=self.use_dlc)
+        self.player2_ai = AIPlayer("AI_Player2", is_first_player=False, epsilon=1.0, use_dlc=self.use_dlc)
         # 断点续训：尝试加载模型和统计
         self.average_rewards = self._try_load_npy(f"{self.run_prefix}_reward_history.npy")
         if self.average_rewards is None:
@@ -196,7 +204,7 @@ class AITrainer:
         np.save(os.path.join(self.model_dir, f"{self.run_prefix}_queenbee_step_history.npy"), np.array(self.queenbee_step_history))
         final_model_file = os.path.join(self.model_dir, f"{self.run_prefix}_final.npz")
         self.player1_ai.neural_network.save_model(final_model_file)
-        # 保存超参数meta
+        # 保存超参数meta到 JSON
         meta = {
             'player1_epsilon': self.player1_ai.epsilon,
             'player2_epsilon': self.player2_ai.epsilon,
@@ -205,14 +213,18 @@ class AITrainer:
             'player1_discount': getattr(self.player1_ai, 'discount_factor', None),
             'player2_discount': getattr(self.player2_ai, 'discount_factor', None),
         }
-        np.save(os.path.join(self.model_dir, f"{self.run_prefix}_meta.npy"), meta)
+        meta_file = os.path.join(self.model_dir, f"{self.run_prefix}_meta.json")
+        with open(meta_file, 'w') as f:
+            json.dump(meta, f)
         print(f"[断点续训] 模型、统计和超参数已保存到 {self.model_dir}")
 
     def _load_meta(self):
-        meta_path = os.path.join(self.model_dir, f"{self.run_prefix}_meta.npy")
+        # 从 JSON 加载超参数
+        meta_path = os.path.join(self.model_dir, f"{self.run_prefix}_meta.json")
         if os.path.exists(meta_path):
             try:
-                meta = np.load(meta_path, allow_pickle=True).item()
+                with open(meta_path, 'r') as f:
+                    meta = json.load(f)
                 if 'player1_epsilon' in meta:
                     self.player1_ai.epsilon = meta['player1_epsilon']
                 if 'player2_epsilon' in meta:

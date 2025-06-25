@@ -3,6 +3,7 @@
 from typing import List, Optional
 from utils import BOARD_SIZE, DIRECTIONS, PieceType, PIECE_TYPE_NAME_LIST
 from piece import Piece, QueenBee, Beetle, Grasshopper, Spider, Ant, Ladybug, Mosquito, Pillbug
+from utils import PIECE_TYPE_NAME_LIST, PieceType
 
 class ChessBoard:
     def __init__(self):
@@ -100,7 +101,7 @@ class ChessBoard:
         piece_to_move = self.board[from_x][from_y][-1]
 
         if piece_to_move.get_piece_type() != piece_type:
-            from utils import PIECE_TYPE_NAME_LIST, PieceType
+            
             # 兼容int和枚举（PieceType无__int__，用value属性或枚举常量比对）
             if isinstance(piece_type, int):
                 type_idx = piece_type
@@ -153,18 +154,27 @@ class ChessBoard:
                     print(".  ", end="")
             print()
         print("\n  y/x => 横为 x 轴，竖为 y 轴（所有行左对齐，蓝=玩家1，橙=玩家2）")
+        # 提示被遮盖的棋子信息
+        for x in range(BOARD_SIZE):
+            for y in range(BOARD_SIZE):
+                stack = self.board[x][y]
+                if len(stack) > 1:
+                    # 排除顶层棋子，列出被遮盖的棋子及所属玩家
+                    hidden = stack[:-1]
+                    info = ", ".join(f"{p.get_name()}({p.get_owner().get_name()})" for p in hidden)
+                    print(f"位置({x},{y}) 有被遮盖的棋子: {info}")
 
     def clear_board(self):
         self.board = [[[] for _ in range(BOARD_SIZE)] for _ in range(BOARD_SIZE)]
 
     def clone(self):
         cloned_board = ChessBoard()
-        cloned_board.clear_board() # Ensure it's empty before copying
+        cloned_board.clear_board()  # Ensure it's empty before copying
         for x in range(BOARD_SIZE):
             for y in range(BOARD_SIZE):
                 for piece in self.board[x][y]:
-                    # Create new piece instances for the cloned board
-                    new_piece = type(piece)(piece.x, piece.y, piece.owner) # Assuming piece constructor takes x, y, owner
+                    # 使用 Piece.clone 方法以保证正确的参数和类型
+                    new_piece = piece.clone(piece.get_owner())
                     cloned_board.board[x][y].append(new_piece)
         return cloned_board
 

@@ -23,8 +23,10 @@ class AIPlayer(Player):
         self.epsilon = epsilon
         self.learning_rate = learning_rate
         self.discount_factor = discount_factor
-        # PyTorch神经网络
-        input_dim = 814 + BOARD_SIZE * 4 + 5  # 适配状态+动作拼接输入
+        # PyTorch神经网络（支持DLC全部8种棋子）
+        # 状态空间: 800(board) + 16(hand) + 4 = 820
+        # 动作空间: BOARD_SIZE*4(one-hot coords) + len(PIECE_TYPE_LIST)(piece types) = 4*10 + 8 = 48
+        input_dim = 820 + BOARD_SIZE * 4 + len(PIECE_TYPE_LIST)
         # 新结构：输入→1024→512→1
         self.neural_network = NeuralNetwork(input_dim=input_dim, hidden_dims=[1024, 512], output_dim=1)
         self.optimizer = torch.optim.Adam(self.neural_network.parameters(), lr=self.learning_rate)
@@ -46,7 +48,7 @@ class AIPlayer(Player):
         fy = np.zeros(BOARD_SIZE, dtype=np.float32)
         tx = np.zeros(BOARD_SIZE, dtype=np.float32)
         ty = np.zeros(BOARD_SIZE, dtype=np.float32)
-        pt = np.zeros(5, dtype=np.float32)
+        pt = np.zeros(len(PIECE_TYPE_LIST), dtype=np.float32)
         if action_type == 'move':
             if from_x is not None and 0 <= from_x < BOARD_SIZE:
                 fx[from_x] = 1.0
@@ -57,7 +59,7 @@ class AIPlayer(Player):
             tx[to_x] = 1.0
         if to_y is not None and 0 <= to_y < BOARD_SIZE:
             ty[to_y] = 1.0
-        if piece_type_id is not None and 0 <= piece_type_id < 5:
+        if piece_type_id is not None and 0 <= piece_type_id < len(PIECE_TYPE_LIST):
             pt[piece_type_id] = 1.0
         return np.concatenate([fx, fy, tx, ty, pt])
 
@@ -155,35 +157,31 @@ class AIPlayer(Player):
                         board_encoding[x, y, piece_type_id] = 1.0
         board_encoding = board_encoding.flatten()
 
-        # 2. Player hand information (10 dimensions)
-        player1_hand_encoding = np.zeros(5, dtype=np.float32)
-        player2_hand_encoding = np.zeros(5, dtype=np.float32)
-
-        piece_type_map = {
-            0: 0, # QUEEN_BEE
-            1: 1, # BEETLE
-            2: 2, # SPIDER
-            3: 3, # ANT
-            4: 4  # GRASSHOPPER
-        }
+        # 2. Player hand information (8 dimensions per player, including DLC)
+        player1_hand_encoding = np.zeros(len(PIECE_TYPE_LIST), dtype=np.float32)
+        player2_hand_encoding = np.zeros(len(PIECE_TYPE_LIST), dtype=np.float32)
+        # 最大棋子数量映射
         max_counts = {
             0: 1, # QUEEN_BEE
             1: 2, # BEETLE
             2: 2, # SPIDER
             3: 3, # ANT
-            4: 3  # GRASSHOPPER
+            4: 3, # GRASSHOPPER
+            5: 1, # LADYBUG
+            6: 1, # MOSQUITO
+            7: 1  # PILLBUG
         }
-        # 防御性检查，防止player1/player2为None
+        # 填充手牌编码
         if game_state.player1 is not None:
-            for piece_type, count in game_state.player1.piece_count.items():
-                piece_type_id = self.safe_piece_type_id(piece_type)
-                if piece_type_id in piece_type_map:
-                    player1_hand_encoding[piece_type_map[piece_type_id]] = count / max_counts[piece_type_id]
+            for pt, count in game_state.player1.piece_count.items():
+                pid = int(pt)
+                if pid in max_counts:
+                    player1_hand_encoding[pid] = count / max_counts[pid]
         if game_state.player2 is not None:
-            for piece_type, count in game_state.player2.piece_count.items():
-                piece_type_id = self.safe_piece_type_id(piece_type)
-                if piece_type_id in piece_type_map:
-                    player2_hand_encoding[piece_type_map[piece_type_id]] = count / max_counts[piece_type_id]
+            for pt, count in game_state.player2.piece_count.items():
+                pid = int(pt)
+                if pid in max_counts:
+                    player2_hand_encoding[pid] = count / max_counts[pid]
 
         # 3. Game state information (4 dimensions)
         current_player_encoding = np.array([current_player_idx], dtype=np.float32)

@@ -277,7 +277,8 @@ def human_vs_ai_game_loop():
     from hive_env import HiveEnv
     game = Game.get_instance()
     player1_name = input("Enter Human Player's name: ").strip()
-    use_dlc = False
+    # DLC option
+    use_dlc = input("Enable DLC pieces? (y/n) [n]: ").strip().lower() == 'y'
     player1 = Player(player1_name, is_first_player=True, use_dlc=use_dlc)
 
     # 进入人机对战分支后立即询问模型
@@ -292,59 +293,66 @@ def human_vs_ai_game_loop():
     else:
         print("未选择模型，AI将随机下棋。")
 
-    env = HiveEnv(training_mode=False)
+    env = HiveEnv(training_mode=False, use_dlc=use_dlc)
     game.initialize_game(player1, ai_player)
     game_loop(game)
 
 def ai_training_loop():
     print("\n--- AI Training ---")
-    # 二级菜单
+    # 二级菜单：新建或继续训练
     print("请选择训练模式：")
     print("1. 训练新AI（新建模型目录）")
     print("2. 继续训练已有AI（断点续训）")
     mode = input("输入选项(1-2，回车默认1): ").strip()
     trainer = None
     if mode == '2':
-        # 列出所有可用老AI模型
+        # 尝试断点续训
         model_dirs = sorted([d for d in glob.glob("models/*") if os.path.isdir(d)])
         if not model_dirs:
-            print("未找到任何历史AI模型，将新建训练。")
-            trainer = AITrainer(force_new=True)
+            print("未找到任何历史AI模型，切换到新建训练。")
+            # 新建：询问DLC
+            use_dlc = input("Enable DLC pieces for training? (y/n) [n]: ").strip().lower() == 'y'
+            trainer = AITrainer(force_new=True, use_dlc=use_dlc)
         else:
+            # 列出历史模型目录
             print("可用历史AI模型：")
             for idx, d in enumerate(model_dirs):
-                # 显示目录下最新npz模型
-                npz_files = sorted(glob.glob(os.path.join(d, "*_final.npz")))
-                npz_str = npz_files[-1] if npz_files else "(无模型文件)"
-                print(f"{idx}: {d}  最新模型: {os.path.basename(npz_str) if npz_files else npz_str}")
-            sel = input("请输入要继续训练的AI编号（回车默认最新）:").strip()
+                print(f"{idx}: {d}")
+            sel = input("请输入要继续训练的AI目录编号（回车默认最新）:").strip()
             if sel == '':
                 model_dir = model_dirs[-1]
             else:
                 try:
                     model_dir = model_dirs[int(sel)]
                 except Exception:
-                    print("输入无效，使用最新。")
+                    print("输入无效，使用最新目录。")
                     model_dir = model_dirs[-1]
-            # 解析run_prefix
+            # 根据目录名后缀判断是否 DLC
+            suffix = os.path.basename(model_dir).split('_')[-1]
+            use_dlc = (suffix == 'dlc')
+            # 解析 run_prefix
             npz_files = sorted(glob.glob(os.path.join(model_dir, "*_final.npz")))
             if not npz_files:
-                print("该目录下无模型文件，将新建训练。")
-                trainer = AITrainer(force_new=True)
+                print("该目录下无模型文件，切换到新建训练。")
+                trainer = AITrainer(force_new=True, use_dlc=use_dlc)
             else:
                 latest_npz = os.path.basename(npz_files[-1])
                 run_prefix = latest_npz.split("_final.npz")[0]
-                trainer = AITrainer(custom_dir=model_dir, custom_prefix=run_prefix)
-                print(f"[断点续训] 继续训练: {model_dir}, 前缀: {run_prefix}")
+                trainer = AITrainer(custom_dir=model_dir, custom_prefix=run_prefix, use_dlc=use_dlc)
+                print(f"[断点续训] 继续训练: {model_dir}, DLC={'启用' if use_dlc else '禁用'}")
     else:
-        trainer = AITrainer(force_new=True)
+        # 新建训练：询问DLC
+        use_dlc = input("Enable DLC pieces for training? (y/n) [n]: ").strip().lower() == 'y'
+        trainer = AITrainer(force_new=True, use_dlc=use_dlc)
     print("\n训练将无限进行，请随时按 Ctrl+C 终止并自动保存断点。\n")
     trainer.train()
     input("\nAI training complete. Press Enter to return to main menu...")
 
 def ai_evaluation_loop():
     print("\n--- AI Evaluation ---")
-    evaluator = AIEvaluator()
+    # DLC option for evaluation
+    use_dlc = input("Enable DLC pieces for evaluation? (y/n) [n]: ").strip().lower() == 'y'
+    evaluator = AIEvaluator(use_dlc=use_dlc)
     num_games = int(input("Enter number of evaluation games (e.g., 100): "))
     evaluator.evaluate(num_games=num_games)
     input("\nAI evaluation complete. Press Enter to return to main menu...")

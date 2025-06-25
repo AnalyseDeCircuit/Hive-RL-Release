@@ -32,22 +32,23 @@ class HiveEnv(gym.Env):
     metadata = {'render_modes': ['human'], 'render_fps': 4}
     MAX_TURNS = 120  # 步数上限由200改为120
 
-    def __init__(self, training_mode=True):
+    def __init__(self, training_mode=True, use_dlc=False):
         super(HiveEnv, self).__init__()
+        self.use_dlc = use_dlc  # 是否启用DLC棋子
         self.game = Game()
         self.board = ChessBoard()
-        self.player1 = Player("Player1", is_ai=True)
-        self.player2 = Player("Player2", is_ai=True)
+        self.player1 = Player("Player1", is_ai=True, use_dlc=self.use_dlc)
+        self.player2 = Player("Player2", is_ai=True, use_dlc=self.use_dlc)
         self.game.player1 = self.player1
         self.game.player2 = self.player2
         self.training_mode = training_mode  # 新增：训练/游玩模式标志
 
-        # Define observation space (814-dimensional vector)
+        # Define observation space (820-dimensional vector) including DLC pieces
         # 10x10 board with 8 piece types per cell = 800
-        # 2 players * 5 piece types (normalized counts) = 10
+        # 2 players * 8 piece types (normalized counts) = 16
         # Current player (1), turn count (1), queen bee placed (2) = 4
-        # Total = 800 + 10 + 4 = 814
-        self.observation_space = spaces.Box(low=0, high=1, shape=(814,), dtype=np.float32)
+        # Total = 800 + 16 + 4 = 820
+        self.observation_space = spaces.Box(low=0, high=1, shape=(820,), dtype=np.float32)
 
         # Define action space
         # The report mentions action encoding: place (x*1000 + y*100 + pieceType) < 10000
@@ -66,34 +67,28 @@ class HiveEnv(gym.Env):
         board_arr = board_to_numpy(self.board, BOARD_SIZE, len(PIECE_TYPE_LIST))
         board_encoding = encode_board_numba(board_arr, BOARD_SIZE, len(PIECE_TYPE_LIST))
 
-        # 2. Player hand information (10 dimensions)
-        # Using 5 basic piece types as mentioned in the report (QueenBee, Beetle, Spider, Ant, Grasshopper)
-        # Max count for each piece type is 3 (for Ant, Spider, Grasshopper) or 2 (for Beetle) or 1 (for QueenBee)
-        # The report says 'divide by max quantity (usually 3)'
-        player1_hand_encoding = np.zeros(5, dtype=np.float32)
-        player2_hand_encoding = np.zeros(5, dtype=np.float32)
+        # 2. Player hand information (16 dimensions, including DLC)
+        player1_hand_encoding = np.zeros(len(PIECE_TYPE_LIST), dtype=np.float32)
+        player2_hand_encoding = np.zeros(len(PIECE_TYPE_LIST), dtype=np.float32)
 
-        piece_type_map = {
-            PieceType.QUEEN_BEE: 0,
-            PieceType.BEETLE: 1,
-            PieceType.SPIDER: 2,
-            PieceType.ANT: 3,
-            PieceType.GRASSHOPPER: 4
-        }
+        # Max counts for all piece types (DLC included)
         max_counts = {
             PieceType.QUEEN_BEE: 1,
             PieceType.BEETLE: 2,
             PieceType.SPIDER: 2,
             PieceType.ANT: 3,
-            PieceType.GRASSHOPPER: 3
+            PieceType.GRASSHOPPER: 3,
+            PieceType.LADYBUG: 1,
+            PieceType.MOSQUITO: 1,
+            PieceType.PILLBUG: 1
         }
 
         for piece_type, count in self.player1.piece_count.items():
-            if piece_type in piece_type_map:
-                player1_hand_encoding[piece_type_map[piece_type]] = count / max_counts[piece_type]
+            if piece_type in max_counts:
+                player1_hand_encoding[piece_type] = count / max_counts[piece_type]
         for piece_type, count in self.player2.piece_count.items():
-            if piece_type in piece_type_map:
-                player2_hand_encoding[piece_type_map[piece_type]] = count / max_counts[piece_type]
+            if piece_type in max_counts:
+                player2_hand_encoding[piece_type] = count / max_counts[piece_type]
 
         # 3. Game state information (4 dimensions)
         current_player_encoding = np.array([self.current_player_idx], dtype=np.float32)
@@ -136,12 +131,13 @@ class HiveEnv(gym.Env):
             # Piece type is not encoded in move action, will need to infer from board
             return 'move', from_x, from_y, to_x, to_y, None
 
-    def reset(self, seed=None, options=None):
+    def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
         self.game = Game()
         self.board = ChessBoard()
-        self.player1 = Player("Player1", is_ai=True)
-        self.player2 = Player("Player2", is_ai=True)
+        # 恢复DLC设置
+        self.player1 = Player("Player1", is_ai=True, use_dlc=self.use_dlc)
+        self.player2 = Player("Player2", is_ai=True, use_dlc=self.use_dlc)
         self.game.player1 = self.player1
         self.game.player2 = self.player2
         self.game.initialize_game(self.player1, self.player2) # Assuming no DLC for RL

@@ -13,11 +13,13 @@ class RandomPlayer(Player):
         return random.choice(legal_actions)
 
 class AIEvaluator:
-    def __init__(self, model_path="./ai_model.npz"):
-        self.env = HiveEnv()
+    def __init__(self, use_dlc=False, model_path="./ai_model.npz"):
+        self.use_dlc = use_dlc  # 是否启用DLC棋子
+        # 初始化环境和玩家
+        self.env = HiveEnv(use_dlc=self.use_dlc)
         self.model_path = model_path
-        self.ai_player = AIPlayer("Evaluated_AI", is_first_player=True, epsilon=0.0) # No exploration during evaluation
-        self.random_player = RandomPlayer("Random_AI", is_first_player=False) # Always explore (random actions)
+        self.ai_player = AIPlayer("Evaluated_AI", is_first_player=True, epsilon=0.0, use_dlc=self.use_dlc)  # No exploration during evaluation
+        self.random_player = RandomPlayer("Random_AI", is_first_player=False, use_dlc=self.use_dlc)  # Always explore (random actions)
 
     def evaluate(self, num_games=100):
         print(f"Starting AI evaluation for {num_games} games...")
