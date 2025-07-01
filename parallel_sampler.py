@@ -3,7 +3,7 @@ from hive_env import HiveEnv, Action
 from ai_player import AIPlayer
 import numpy as np
 
-def worker_process(queue, player_args, env_args, episode_per_worker=1, reward_shaper_config=None):
+def worker_process(queue, player_args, env_args, episode_per_worker=1, reward_shaper_config=None, epsilon_sync_queue=None):
     # 支持从 env_args 传入 reward shaping 函数
     shaping_func = env_args.pop('reward_shaping_func', None)
     env = HiveEnv(**env_args)
@@ -30,6 +30,17 @@ def worker_process(queue, player_args, env_args, episode_per_worker=1, reward_sh
     # 修复：添加episode计数器限制，防止无限循环
     episode_count = 0
     while episode_count < episode_per_worker:  # 修复：使用计数器限制
+        # 检查epsilon同步队列
+        if epsilon_sync_queue is not None:
+            try:
+                # 非阻塞检查是否有新的epsilon值
+                new_epsilon = epsilon_sync_queue.get_nowait()
+                ai.epsilon = new_epsilon
+                print(f"[Worker] 更新epsilon: {new_epsilon:.4f}")
+            except:
+                # 队列为空，继续使用当前epsilon
+                pass
+        
         obs, info = env.reset()
         terminated = False
         truncated = False
@@ -93,7 +104,7 @@ if __name__ == '__main__':
     queue = mp.Queue(maxsize=32)
     player_args = dict(name='AI_Parallel', is_first_player=True)
     env_args = dict(training_mode=True)
-    workers = [mp.Process(target=worker_process, args=(queue, player_args, env_args)) for _ in range(num_workers)]
+    workers = [mp.Process(target=worker_process, args=(queue, player_args, env_args, 10, None, None)) for _ in range(num_workers)]
     for w in workers:
         w.daemon = True
         w.start()

@@ -150,11 +150,14 @@ class AITrainer:
         end_stats = {'win': 0, 'lose': 0, 'draw': 0, 'max_turns': 0, 'other': 0}
         episode = self.start_episode
         
-        # 启动worker进程 - 修复：正确传递reward_shaper配置
+        # 启动worker进程 - 修复：正确传递reward_shaper配置和epsilon同步
         queue = mp.Queue(maxsize=100)
+        epsilon_sync_queues = []  # 为每个worker创建独立的epsilon同步队列
         workers = []
         from parallel_sampler import worker_process
-        player_args = dict(name='AI_Parallel', is_first_player=True, use_dlc=self.use_dlc)
+        
+        # 传递当前的epsilon值给worker
+        player_args = dict(name='AI_Parallel', is_first_player=True, use_dlc=self.use_dlc, epsilon=self.player1_ai.epsilon)
         
         # 修复：正确传递reward_shaper给worker环境
         current_reward_shaper = getattr(self.env, 'reward_shaper', None)
@@ -170,10 +173,16 @@ class AITrainer:
         
         episodes_per_worker = max(10, max_episodes // num_workers)
         for i in range(num_workers):
-            w = mp.Process(target=worker_process, args=(queue, player_args, env_args, episodes_per_worker, reward_shaper_config))
+            # 为每个worker创建独立的epsilon同步队列
+            epsilon_sync_queue = mp.Queue(maxsize=10)
+            epsilon_sync_queues.append(epsilon_sync_queue)
+            
+            w = mp.Process(target=worker_process, args=(queue, player_args, env_args, episodes_per_worker, reward_shaper_config, epsilon_sync_queue))
             w.daemon = True
             w.start()
             workers.append(w)
+        
+        print(f"[Trainer] 启动 {num_workers} 个worker，初始epsilon: {self.player1_ai.epsilon:.4f}")
         
         # 添加worker存活检查
         workers_alive = num_workers
@@ -316,11 +325,15 @@ class AITrainer:
                     self.end_stats_history.append(end_stats.copy())
                     
                     # Epsilon管理：课程学习优先，否则使用简单衰减
+                    old_epsilon = self.player1_ai.epsilon
                     if curriculum_epsilon_config is not None:
-                        # 课程学习的线性epsilon衰减
-                        episodes_in_phase = episode
-                        if episodes_in_phase < curriculum_epsilon_config['decay_episodes']:
-                            progress = episodes_in_phase / curriculum_epsilon_config['decay_episodes']
+                        # 课程学习的线性epsilon衰减 - 修复：使用阶段内的episode数
+                        total_episodes_before = curriculum_epsilon_config.get('total_episodes_before', 0)
+                        current_total_episodes = len(self.average_rewards) if self.average_rewards else 0
+                        episodes_in_current_phase = current_total_episodes - total_episodes_before
+                        
+                        if episodes_in_current_phase < curriculum_epsilon_config['decay_episodes']:
+                            progress = episodes_in_current_phase / curriculum_epsilon_config['decay_episodes']
                             current_epsilon = (curriculum_epsilon_config['start'] * (1 - progress) + 
                                              curriculum_epsilon_config['end'] * progress)
                             self.player1_ai.epsilon = max(current_epsilon, curriculum_epsilon_config['end'])
@@ -332,6 +345,16 @@ class AITrainer:
                         # 独立训练时的简单epsilon衰减
                         self.player1_ai.epsilon = max(self.player1_ai.epsilon * epsilon_decay, min_epsilon)
                         self.player2_ai.epsilon = max(self.player2_ai.epsilon * epsilon_decay, min_epsilon)
+                    
+                    # 关键修复：同步epsilon到所有worker进程
+                    if abs(self.player1_ai.epsilon - old_epsilon) > 1e-6:  # epsilon发生了变化
+                        for epsilon_sync_queue in epsilon_sync_queues:
+                            try:
+                                # 非阻塞发送新的epsilon值
+                                epsilon_sync_queue.put_nowait(self.player1_ai.epsilon)
+                            except:
+                                # 队列满了，跳过这个worker（它会在下次episode时更新）
+                                pass
                     
                     # ---reward异常检测与上限保护---
                     REWARD_ABS_LIMIT = 200  # 正常Hive终局奖励绝不应超过±200
@@ -567,11 +590,8 @@ class AITrainer:
             # 基于实际项目复杂度和计算资源的平衡配置
             # 网络参数: ~140万, 状态空间: 820维, 动作空间: 20000
             # 优化后训练配置: 确保充分收敛 (~3-4小时训练)
-            phases = [
-                {'name': 'foundation', 'episodes': 40000, 'description': '基础棋规学习 - 掌握合法动作和基本规则', 'reward_shaper': None, 'epsilon_start': 0.9, 'epsilon_end': 0.4, 'epsilon_decay_episodes': 5000},
-                {'name': 'strategy',   'episodes': 50000, 'description': '策略学习增强 - 中级战术和位置判断', 'reward_shaper': None, 'epsilon_start': 0.4, 'epsilon_end': 0.15, 'epsilon_decay_episodes': 8000},
-                {'name': 'mastery',    'episodes': 30000, 'description': '精通阶段 - 高级策略优化',     'reward_shaper': None, 'epsilon_start': 0.15, 'epsilon_end': 0.05, 'epsilon_decay_episodes': 6000},
-            ]
+            from improved_reward_shaping import create_curriculum_phases
+            phases = create_curriculum_phases()
         
         total_episodes_before = len(self.average_rewards) if self.average_rewards else 0
         total_episodes_target = sum(phase['episodes'] for phase in phases)
@@ -631,8 +651,17 @@ class AITrainer:
                 print(f"[Curriculum] 最终Epsilon: P1={self.player1_ai.epsilon:.3f}, P2={self.player2_ai.epsilon:.3f}")
                 
             except KeyboardInterrupt:
-                print(f"\n[Curriculum] 阶段 {phase['name']} 被中断")
-                user_choice = input("输入'next'跳到下一阶段，'exit'退出，其他继续: ").strip().lower()
+                # 确保保存当前进度
+                print(f"\n[Curriculum] 阶段 {phase['name']} 被中断，正在保存进度...")
+                self._save_checkpoint()
+                print("[Curriculum] 进度已保存")
+                
+                try:
+                    user_choice = input("输入'next'跳到下一阶段，'exit'退出，其他继续: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    # 处理连续Ctrl+C或输入中断
+                    print("\n[Curriculum] 检测到强制退出信号")
+                    user_choice = 'exit'
                 
                 if user_choice == 'exit':
                     print("[Curriculum] 用户选择退出课程学习")
@@ -646,24 +675,63 @@ class AITrainer:
                     episodes_after = len(self.average_rewards) if self.average_rewards else 0
                     remaining = phase['episodes'] - (episodes_after - episodes_before)
                     if remaining > 0:
-                        self.train(
-                            max_episodes=remaining, 
-                            num_workers=10,
-                            epsilon_decay=1.0,  # 禁用内部epsilon衰减
-                            min_epsilon=0.0,
-                            curriculum_epsilon_config=phase_epsilon_config  # 传递epsilon配置
-                        )
+                        try:
+                            self.train(
+                                max_episodes=remaining, 
+                                num_workers=10,
+                                epsilon_decay=1.0,  # 禁用内部epsilon衰减
+                                min_epsilon=0.0,
+                                curriculum_epsilon_config=phase_epsilon_config  # 传递epsilon配置
+                            )
+                        except KeyboardInterrupt:
+                            print(f"\n[Curriculum] 阶段 {phase['name']} 二次中断，保存并退出")
+                            self._save_checkpoint()
+                            break
             
             total_episodes_before += phase['episodes']
-            
-        # 恢复原始设置
+        
+        # 恢复原始设置并最终保存
         self.env.reward_shaper = original_reward_shaper
         
         total_episodes_after = len(self.average_rewards) if self.average_rewards else 0
         print(f"\n[Curriculum] 课程学习完成!")
         print(f"[Curriculum] 总训练episodes: {total_episodes_after:,}")
         print(f"[Curriculum] 新增episodes: {total_episodes_after - (total_episodes_after - total_episodes_target):,}")
-        self._save_checkpoint()
+        
+        # 确保最终保存
+        try:
+            self._save_checkpoint()
+            print("[Curriculum] 最终模型已保存")
+        except Exception as e:
+            print(f"[Curriculum] 保存模型时出错: {e}")
+
+    def curriculum_train_with_signal_handling(self):
+        """带信号处理的课程训练 - 确保Ctrl+C时正确保存"""
+        import signal
+        import sys
+        
+        def signal_handler(signum, frame):
+            print(f"\n[Curriculum] 接收到退出信号 {signum}")
+            print("[Curriculum] 正在保存当前进度...")
+            try:
+                self._save_checkpoint()
+                print("[Curriculum] 进度保存完成")
+            except Exception as e:
+                print(f"[Curriculum] 保存失败: {e}")
+            finally:
+                print("[Curriculum] 强制退出")
+                sys.exit(0)
+        
+        # 注册信号处理器
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        
+        try:
+            self.curriculum_train()
+        except Exception as e:
+            print(f"[Curriculum] 训练过程中出现异常: {e}")
+            self._save_checkpoint()
+            raise
 
 
 

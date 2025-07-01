@@ -28,25 +28,25 @@ class HiveRewardShaper:
         # 不同阶段的奖励权重配置
         self.phase_configs = {
             'foundation': {
-                'survival_weight': 0.05,     # 大幅降低存活奖励权重
-                'action_weight': 0.10,       # 大幅降低动作奖励权重
-                'strategy_weight': 0.25,     # 适当保留战略奖励
-                'terminal_weight': 0.60,     # 大幅提升终局奖励权重
-                'illegal_penalty': -0.8,     # 严惩非法动作
+                'survival_weight': 0.02,     # 进一步降低存活奖励权重
+                'action_weight': 0.05,       # 进一步降低动作奖励权重
+                'strategy_weight': 0.50,     # 大幅提升战略奖励权重 (0.25 -> 0.50)
+                'terminal_weight': 0.43,     # 适当降低终局奖励权重 (0.60 -> 0.43)
+                'illegal_penalty': -8.0,     # 进一步提升非法动作惩罚
             },
             'strategy': {
-                'survival_weight': 0.03,
-                'action_weight': 0.07,
-                'strategy_weight': 0.40,     # 提升战略奖励
-                'terminal_weight': 0.50,     # 重视终局奖励
-                'illegal_penalty': -0.6,
+                'survival_weight': 0.01,
+                'action_weight': 0.04,
+                'strategy_weight': 0.65,     # 策略阶段更重视战略 (0.40 -> 0.65)
+                'terminal_weight': 0.30,     # 降低终局权重 (0.50 -> 0.30)
+                'illegal_penalty': -6.0,     # 提升非法动作惩罚
             },
             'mastery': {
-                'survival_weight': 0.02,
-                'action_weight': 0.05,
-                'strategy_weight': 0.30,
-                'terminal_weight': 0.63,     # 最终阶段最重视胜负
-                'illegal_penalty': -1.0,     # 最严惩罚
+                'survival_weight': 0.01,
+                'action_weight': 0.04,
+                'strategy_weight': 0.45,     # 精通阶段平衡战略和终局 (0.30 -> 0.45)
+                'terminal_weight': 0.50,     # 适当提升终局权重 (0.63 -> 0.50)
+                'illegal_penalty': -8.0,     # 最严惩罚，与基础阶段一致
             }
         }
         
@@ -114,26 +114,26 @@ class HiveRewardShaper:
             )
             strategy_reward = surround_progress + defense_progress
         
-        # 5. 终局奖励 (大幅提升，确保胜利目标明确)
+        # 5. 终局奖励 (进一步降低，避免权重加成后过高)
         terminal_reward = 0.0
         if terminated:
             if reason in ['player1_win', 'player2_win']:
-                # 胜利奖励：基础+速度奖励，大幅提升
-                base_win_reward = 5.0  # 从0.8大幅提升到5.0
-                speed_bonus = max(0.0, (100 - turn_count) / 100 * 2.0)  # 最多2.0额外奖励
+                # 胜利奖励：基础+速度奖励，进一步降低
+                base_win_reward = 2.0  # 从5.0降低到2.0
+                speed_bonus = max(0.0, (100 - turn_count) / 100 * 0.5)  # 从2.0降低到0.5
                 terminal_reward = base_win_reward + speed_bonus
                 # 根据原始奖励正负性调整
                 if original_reward < 0:
                     terminal_reward = -terminal_reward
             elif reason == 'queen_surrounded':
-                terminal_reward = -6.0  # 蜂后被围失败，从-0.9提升到-6.0
+                terminal_reward = -2.5  # 从-6.0降低到-2.5
             elif reason == 'draw':
                 # 平局：根据包围优势给予微调
                 surround_advantage = opp_queen_surrounded_count - my_queen_surrounded_count
-                terminal_reward = np.clip(surround_advantage * 0.5, -1.0, 1.0)  # 提升平局评估范围
+                terminal_reward = np.clip(surround_advantage * 0.2, -0.5, 0.5)  # 从0.5降低到0.2
             elif reason in ['max_turns_reached', 'no_legal_action']:
-                # 大幅加重超时和无合法动作的惩罚
-                terminal_reward = -3.0  # 从-0.8大幅提升到-3.0
+                # 降低超时和无合法动作的惩罚
+                terminal_reward = -1.0  # 从-3.0降低到-1.0
         
         # 6. 加权组合
         final_reward = (
@@ -143,39 +143,39 @@ class HiveRewardShaper:
             terminal_reward * self.config['terminal_weight']
         )
         
-        # 7. 最终裁剪到合理范围 (扩大范围以容纳更大的终局奖励)
-        final_reward = np.clip(final_reward, -10.0, 10.0)
+        # 7. 最终裁剪到合理范围 (进一步缩小范围)
+        final_reward = np.clip(final_reward, -5.0, 5.0)
         
         return final_reward
     
     def _calculate_surround_progress(self, current_surrounded: int, prev_surrounded: int) -> float:
-        """计算包围对方蜂后的进度奖励"""
+        """计算包围对方蜂后的进度奖励 - 进一步降低以避免累积过高"""
         if current_surrounded > prev_surrounded:
-            # 增加包围：渐进式奖励
+            # 增加包围：渐进式奖励 (进一步降低)
             progress = current_surrounded - prev_surrounded
             if current_surrounded <= 2:
-                return 0.05 * progress  # 初期包围
+                return 0.05 * progress   # 从0.5降低到0.05
             elif current_surrounded <= 4:
-                return 0.10 * progress  # 中期包围
+                return 0.1 * progress    # 从1.0降低到0.1
             else:
-                return 0.15 * progress  # 后期包围(接近胜利)
+                return 0.15 * progress   # 从2.0降低到0.15
         return 0.0
     
     def _calculate_defense_progress(self, current_surrounded: int, prev_surrounded: int) -> float:
-        """计算防御己方蜂后的进度奖励"""
+        """计算防御己方蜂后的进度奖励 - 进一步降低以避免累积过高"""
         if current_surrounded < prev_surrounded:
-            # 减少被围：防御奖励
+            # 减少被围：防御奖励 (降低)
             improvement = prev_surrounded - current_surrounded
-            return 0.08 * improvement
+            return 0.08 * improvement  # 从0.6降低到0.08
         elif current_surrounded > prev_surrounded:
-            # 增加被围：防御惩罚
+            # 增加被围：防御惩罚 (降低)
             degradation = current_surrounded - prev_surrounded
             if current_surrounded <= 3:
-                return -0.03 * degradation
+                return -0.05 * degradation   # 从-0.3降低到-0.05
             elif current_surrounded <= 5:
-                return -0.06 * degradation
+                return -0.1 * degradation    # 从-0.8降低到-0.1
             else:
-                return -0.10 * degradation  # 危险状态
+                return -0.2 * degradation    # 从-1.5降低到-0.2
         return 0.0
 
 def create_curriculum_phases() -> list:
@@ -197,26 +197,26 @@ def create_curriculum_phases() -> list:
             'description': '基础棋规学习 - 重点掌握合法动作和基本生存策略',
             'reward_shaper': HiveRewardShaper('foundation'),
             'epsilon_start': 0.9,
-            'epsilon_end': 0.4,
-            'epsilon_decay_episodes': 5000,
+            'epsilon_end': 0.8,  # 修复：更保守的衰减
+            'epsilon_decay_episodes': 35000,  # 修复：大幅延长衰减时间
         },
         {
             'name': 'strategy', 
             'episodes': 50000,  # 增加策略学习量
             'description': '战略学习强化 - 重点学习包围和防御策略',
             'reward_shaper': HiveRewardShaper('strategy'),
-            'epsilon_start': 0.4,
-            'epsilon_end': 0.15,
-            'epsilon_decay_episodes': 8000,
+            'epsilon_start': 0.8,  # 修复：从foundation阶段接续
+            'epsilon_end': 0.4,
+            'epsilon_decay_episodes': 40000,  # 修复：延长衰减时间
         },
         {
             'name': 'mastery',
             'episodes': 30000,  # 增加精通训练量
             'description': '精通阶段优化 - 重点优化胜负判断和高级策略',
             'reward_shaper': HiveRewardShaper('mastery'),
-            'epsilon_start': 0.15,
-            'epsilon_end': 0.05,
-            'epsilon_decay_episodes': 6000,
+            'epsilon_start': 0.4,  # 修复：从strategy阶段接续
+            'epsilon_end': 0.1,
+            'epsilon_decay_episodes': 25000,  # 修复：延长衰减时间
         }
     ]
 

@@ -36,7 +36,7 @@ def encode_state_vector_numba(board_encoding, player1_hand_encoding, player2_han
 
 class HiveEnv(gym.Env):
     metadata = {'render_modes': ['human'], 'render_fps': 4}
-    MAX_TURNS = 120  # 步数上限由200改为120
+    MAX_TURNS = 300  # 进一步增加步数上限，给AI更多时间学习策略
 
     def __init__(self, training_mode=True, use_dlc=False, reward_shaper=None):
         super(HiveEnv, self).__init__()
@@ -227,7 +227,8 @@ class HiveEnv(gym.Env):
         must_place_queen = (not current_player.is_queen_bee_placed) and (total_placed >= 3)
         if must_place_queen and (action_type != 'place' or piece_type_id != 0):
             print(f"[DEBUG][step][保险] 必须落蜂后但选了非蜂后动作: action={action}, turn={self.turn_count}, player={self.current_player_idx}")
-            reward = -1.0
+            # 极其严重的惩罚，确保AI强制学会这个规则
+            reward = -20.0
             terminated = True
             truncated = False
             info = {'reason': 'must_place_queen_violation'}
@@ -360,7 +361,10 @@ class HiveEnv(gym.Env):
             # 更新包围状态记录
             self._last_my_queen_dirs = my_queen_dirs
             self._last_opp_queen_dirs = opp_queen_dirs
-            if not terminated:
+            
+            # 使用改进reward shaping时，禁用额外的势函数shaping以避免双重奖励
+            if not terminated and self.reward_shaper is None:
+                # 只有在没有使用改进reward shaping时才使用势函数shaping
                 # --- 势函数 shaping: 仅在达到最小回合后使用，带裁剪和动态衰减 ---
                 new_pot = self._compute_potential()
                 delta_pot = self.potential_gamma * new_pot - self._last_potential
@@ -377,6 +381,11 @@ class HiveEnv(gym.Env):
                 # 记录 shaping 奖励
                 info['shaping_reward'] = shaping
                 self._last_potential = new_pot
+            else:
+                # 使用改进reward shaping时，不使用势函数shaping
+                info['shaping_reward'] = 0.0
+            
+            if not terminated:
                 self.current_player_idx = 1 - self.current_player_idx
                 self.turn_count += 1
         except Exception as e:
@@ -617,7 +626,7 @@ def generate_place_actions_numba(board_arr, piece_counts, must_place_queen, quee
         """
         # 非法动作保险惩罚
         if must_place_queen and (action_type != 'place' or piece_type_id != 0):
-            return -1.0
+            return -20.0  # 极其严重的惩罚，与前面保持一致
             
         # 基础每步惩罚
         reward = -0.01
@@ -628,6 +637,13 @@ def generate_place_actions_numba(board_arr, piece_counts, must_place_queen, quee
         elif action_type == 'place' and not terminated:
             if piece_type_id is not None and piece_type_id != 0:
                 reward += 0.05
+            elif piece_type_id == 0:
+                if must_place_queen:
+                    # 强化奖励：必须放置蜂后时正确放置
+                    reward += 2.0
+                else:
+                    # 正常放置蜂后奖励
+                    reward += 1.0
         
         # 包围奖励逻辑
         surround_bonus_limit = max(6, int(self.turn_count * 0.1))

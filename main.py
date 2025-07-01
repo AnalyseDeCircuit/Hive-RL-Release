@@ -406,7 +406,8 @@ def ai_training_loop():
     elif train_type == '5':
         # 课程学习训练，无需指定局数，按 Ctrl+C 切换阶段
         print("课程学习模式：按 Ctrl+C 结束当前阶段进入下一阶段。")
-        trainer.curriculum_train()
+        print("使用强化的信号处理机制，确保退出时模型被正确保存。")
+        trainer.curriculum_train_with_signal_handling()
     else:
         # 并行采样基础训练
         trainer.train()
