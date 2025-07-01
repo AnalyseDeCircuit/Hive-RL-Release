@@ -83,20 +83,26 @@ class Game:
         player1_queen_found = False
         player2_queen_found = False
 
-        # Find QueenBee positions and check if surrounded
+        # Find QueenBee in all stack levels and check if surrounded
         for x in range(self.board.get_width()):
             for y in range(self.board.get_height()):
-                piece = self.board.get_piece_at(x, y)
-                if piece and piece.get_piece_type() == PieceType.QUEEN_BEE:
-                    if piece.get_owner() == self.player1:
-                        player1_queen_found = True
+                # 遍历该格子所有层的棋子，防止蜂后被覆盖
+                pieces = self.board.get_pieces_at(x, y)
+                for piece in pieces:
+                    if piece.get_piece_type() == PieceType.QUEEN_BEE:
+                        owner = piece.get_owner()
                         # 使用consider_edge=True，边缘也算被包围
-                        if self.board.is_position_surrounded(x, y, consider_edge=True):
-                            player1_queen_surrounded = True
-                    elif piece.get_owner() == self.player2:
-                        player2_queen_found = True
-                        if self.board.is_position_surrounded(x, y, consider_edge=True):
-                            player2_queen_surrounded = True
+                        surrounded = self.board.is_position_surrounded(x, y, consider_edge=True)
+                        if owner == self.player1:
+                            player1_queen_found = True
+                            if surrounded:
+                                player1_queen_surrounded = True
+                        elif owner == self.player2:
+                            player2_queen_found = True
+                            if surrounded:
+                                player2_queen_surrounded = True
+                        # 一个格子不会有多个蜂后，找到后退出当前格子层遍历
+                        break
 
         # 只有蜂后已放置且被包围才算输，否则游戏继续
         if (player1_queen_found and player1_queen_surrounded) or (player2_queen_found and player2_queen_surrounded):
@@ -140,8 +146,8 @@ class Game:
                     from hive_env import HiveEnv, Action
                     env = HiveEnv(training_mode=False)
                     env.board = self.board
-                    env.player1 = self.player1
-                    env.player2 = self.player2
+                    env.player1 = self.player1  # type: ignore
+                    env.player2 = self.player2  # type: ignore
                     env.current_player_idx = 0 if self.current_player == self.player1 else 1
                     env.turn_count = self.turn_count
                     legal_actions = env.get_legal_actions()
@@ -160,8 +166,8 @@ class Game:
                     from hive_env import HiveEnv, Action
                     env = HiveEnv(training_mode=False)
                     env.board = self.board
-                    env.player1 = self.player1
-                    env.player2 = self.player2
+                    env.player1 = self.player1  # type: ignore
+                    env.player2 = self.player2  # type: ignore
                     env.current_player_idx = 0 if self.current_player == self.player1 else 1
                     env.turn_count = self.turn_count
                     legal_actions = env.get_legal_actions()

@@ -404,10 +404,9 @@ def ai_training_loop():
         num_eps = int(episodes) if episodes.isdigit() else 10000
         trainer.adversarial_train(num_episodes=num_eps)
     elif train_type == '5':
-        # 课程学习训练
-        episodes = input("每阶段训练局数(回车默认5000): ").strip()
-        ep_per = int(episodes) if episodes.isdigit() else 5000
-        trainer.curriculum_train(episodes_per_level=ep_per)
+        # 课程学习训练，无需指定局数，按 Ctrl+C 切换阶段
+        print("课程学习模式：按 Ctrl+C 结束当前阶段进入下一阶段。")
+        trainer.curriculum_train()
     else:
         # 并行采样基础训练
         trainer.train()

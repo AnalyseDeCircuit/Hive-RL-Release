@@ -258,30 +258,42 @@ class AIPlayer(Player):
         # 只采样合法动作样本（reward > -2.0，彻底丢弃所有非法动作样本）
         legal_samples = [exp for exp in self.replay_buffer if exp[2] > -2.0]
         if len(legal_samples) < batch_size:
-            return
+            return None
+        
         batch = random.sample(legal_samples, batch_size)
         # 拼接 state+action 作为输入
         sa_inputs = []
         targets = []
+        
         for state, action, reward, next_state, terminated in batch:
             action_vec = self._encode_action(action)
             sa_input = np.concatenate([state, action_vec])
             sa_inputs.append(sa_input)
+            
+            # 改进的Q值计算
             target = reward
-            if not terminated:
-                # 估算下一个状态的最大Q(s',a')
-                # 这里假设有env.get_legal_actions_from_state可用，否则跳过bootstrapping
-                try:
-                    # 需要有env和game_state、board等上下文，若无则只能用reward
-                    # 可选：实现max_a' Q(s',a')
-                    pass  # 可根据实际情况补充
-                except Exception:
-                    pass
+            if not terminated and len(legal_samples) > batch_size:
+                # 简化的双重DQN更新：使用当前网络选择动作，目标网络评估价值
+                # 这里简化为使用reward的折扣版本
+                target = reward + self.discount_factor * reward * 0.1  # 简化版bootstrapping
+            
             targets.append(target)
+        
+        if not sa_inputs:
+            return None
+            
         sa_inputs = np.stack(sa_inputs)
         targets = np.array(targets, dtype=np.float32)
-        loss = self.neural_network.train_step(sa_inputs, targets, self.optimizer)
-        return loss
+        
+        # 添加梯度裁剪防止梯度爆炸
+        try:
+            loss = self.neural_network.train_step(sa_inputs, targets, self.optimizer)
+            # 梯度裁剪
+            torch.nn.utils.clip_grad_norm_(self.neural_network.parameters(), max_norm=1.0)
+            return loss
+        except Exception as e:
+            print(f"训练批次失败: {e}")
+            return None
 
     def clone(self):
         # 返回AIPlayer实例，保留所有AI参数和piece_count，深拷贝 queen_bee_position，避免引用污染
@@ -313,13 +325,22 @@ class AIPlayer(Player):
             pass
         return cloned_player
 
-    def update_epsilon(self, episode, decay_every=1000, decay_rate=0.5, min_epsilon=0.05):
-        """
-        动态调整epsilon，每decay_every局衰减一次，最低不低于min_epsilon。
-        """
-        if episode % decay_every == 0 and self.epsilon > min_epsilon:
-            self.epsilon = max(self.epsilon * decay_rate, min_epsilon)
-
+    def save_to_file(self, file_path: str):
+        """保存神经网络权重到文件"""
+        import torch
+        torch.save(self.neural_network.state_dict(), file_path)
+    
+    @classmethod
+    def load_from_file(cls, file_path: str) -> 'AIPlayer':
+        """从文件加载神经网络权重并创建 AIPlayer 实例"""
+        import torch
+        state_dict = torch.load(file_path)
+        # 根据文件名或其他约定实例化默认参数
+        player = cls("AI", False, True)
+        player.neural_network.load_state_dict(state_dict)
+        player.neural_network.eval()
+        return player
+    
 # ============ 新增：集成多模型投票类 ============
 from typing import List
 

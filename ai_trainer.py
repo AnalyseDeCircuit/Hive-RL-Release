@@ -5,11 +5,21 @@ import datetime
 import numpy as np
 import json
 import torch
+import time
 from hive_env import HiveEnv
 from ai_player import AIPlayer
 from game import Game
 from board import ChessBoard
 import multiprocessing as mp
+
+# 模块级 reward shaping 函数，确保可被 multiprocessing pickle
+def _shaping_transition(r, term):
+    # 削弱微小中间奖励
+    return 0 if not term and abs(r) < 0.1 else r
+
+def _shaping_finetune(r, term):
+    # 仅终局奖励
+    return r if term else 0
 
 # Worker function for module-level parallel self-play
 def _parallel_self_play_worker(args):
@@ -124,7 +134,7 @@ class AITrainer:
                 print(f"[WARN] 加载{filename}失败: {e}")
         return None
 
-    def train(self, epsilon_decay=0.995, min_epsilon=0.01, batch_size=24, num_workers=10):
+    def train(self, epsilon_decay=0.995, min_epsilon=0.01, batch_size=24, num_workers=10, max_episodes=10000, curriculum_epsilon_config=None):
         # 类型兜底，防止NoneType.append
         if self.average_rewards is None:
             self.average_rewards = []
@@ -136,30 +146,74 @@ class AITrainer:
             self.illegal_action_count_history = []
         if self.queenbee_step_history is None:
             self.queenbee_step_history = []
-        print(f"Starting AI training (并行采样worker={num_workers}，Ctrl+C终止)...")
+        print(f"Starting AI training (并行采样worker={num_workers}，最大{max_episodes}局，Ctrl+C终止)...")
         end_stats = {'win': 0, 'lose': 0, 'draw': 0, 'max_turns': 0, 'other': 0}
         episode = self.start_episode
-        # 启动worker进程
+        
+        # 启动worker进程 - 修复：正确传递reward_shaper配置
         queue = mp.Queue(maxsize=100)
         workers = []
         from parallel_sampler import worker_process
-        player_args = dict(name='AI_Parallel', is_first_player=True)
-        env_args = dict(training_mode=True)
+        player_args = dict(name='AI_Parallel', is_first_player=True, use_dlc=self.use_dlc)
+        
+        # 修复：正确传递reward_shaper给worker环境
+        current_reward_shaper = getattr(self.env, 'reward_shaper', None)
+        reward_shaper_config = None
+        if current_reward_shaper:
+            # 提取reward_shaper的配置信息
+            reward_shaper_config = {
+                'phase': getattr(current_reward_shaper, 'phase', 'foundation')
+            }
+            print(f"[Trainer] 传递奖励整形配置给workers: {reward_shaper_config}")
+        
+        env_args = dict(training_mode=True, use_dlc=self.use_dlc)
+        
+        episodes_per_worker = max(10, max_episodes // num_workers)
         for i in range(num_workers):
-            w = mp.Process(target=worker_process, args=(queue, player_args, env_args))
+            w = mp.Process(target=worker_process, args=(queue, player_args, env_args, episodes_per_worker, reward_shaper_config))
             w.daemon = True
             w.start()
             workers.append(w)
+        
+        # 添加worker存活检查
+        workers_alive = num_workers
+        samples_received = 0
+        
+        # 新增：跟踪当前episode的状态
+        current_episode_data = None
+        episode_transition_count = 0
+        
         try:
-            while True:
-                # 从队列收集worker采样结果
-                sample = queue.get()  # 阻塞等待
+            while episode < max_episodes and workers_alive > 0:
+                try:
+                    # 从队列收集worker采样结果 - 添加超时避免无限等待
+                    sample = queue.get(timeout=30)  # 30秒超时
+                    samples_received += 1
+                except:
+                    # 检查worker状态
+                    alive_count = sum(1 for w in workers if w.is_alive())
+                    if alive_count == 0:
+                        print("所有worker已退出，结束训练")
+                        break
+                    else:
+                        print(f"队列超时，当前存活worker: {alive_count}")
+                        continue
+                
                 # sample应包含: obs, action, reward, next_obs, terminated, episode_reward, episode_steps, illegal_count, queenbee_step, info
-                # 你可根据parallel_sampler.worker_process实际返回结构调整
-                (obs, action, reward, next_obs, terminated, episode_reward, episode_steps, illegal_action_count, queenbee_step, info) = sample
-                # 经验回放
+                try:
+                    (obs, action, reward, next_obs, terminated, episode_reward, episode_steps, illegal_action_count, queenbee_step, info) = sample
+                except ValueError as e:
+                    print(f"样本解析错误: {e}, sample: {sample}")
+                    continue
+                
+                # 只处理terminated=True的样本（episode结束）
+                if not terminated:
+                    print("[DEBUG] 收到未终止的样本，跳过统计但仍进行训练")
+                
+                # 经验回放 - 所有样本都用于训练
                 self.player1_ai.add_experience(obs, action, reward, next_obs, terminated)
                 loss = self.player1_ai.train_on_batch(batch_size)
+                
                 # ---loss历史自动保存---
                 if not hasattr(self, 'loss_history'):
                     self.loss_history = []
@@ -168,57 +222,157 @@ class AITrainer:
                     # 每100步保存一次loss历史
                     if len(self.loss_history) % 100 == 0:
                         np.save(os.path.join(self.model_dir, f"{self.run_prefix}_loss_history.npy"), np.array(self.loss_history))
-                # 统计
-                reason = info.get('reason', '') if isinstance(info, dict) else ''
-                if reason == 'max_turns_reached':
-                    end_stats['max_turns'] += 1
-                elif reason == 'board_full_draw':
-                    end_stats['draw'] += 1
-                elif episode_reward == 20.0:
-                    end_stats['win'] += 1
-                elif episode_reward == -20.0:
-                    end_stats['lose'] += 1
-                elif reason == 'no_legal_action':
-                    end_stats['other'] += 1
-                else:
-                    end_stats['other'] += 1
-                # 自动衰减epsilon（推荐每1000局减半，最低0.05）
-                # 修正：仅当episode>0且能整除decay_every时才衰减，避免第一轮直接减半
-                if episode > 0:
-                    self.player1_ai.update_epsilon(episode, decay_every=1000, decay_rate=0.5, min_epsilon=0.05)
-                    self.player2_ai.update_epsilon(episode, decay_every=1000, decay_rate=0.5, min_epsilon=0.05)
-                # ---reward异常检测与上限保护---
-                REWARD_ABS_LIMIT = 200  # 正常Hive终局奖励绝不应超过±200
-                if abs(episode_reward) > REWARD_ABS_LIMIT:
-                    print(f"[WARN][REWARD] Episode {episode+1} reward异常: {episode_reward:.2f}，请检查reward shaping/终局奖励/循环。")
-                    # reward上限保护，截断极端reward，防止AI刷分
-                    episode_reward = max(min(episode_reward, REWARD_ABS_LIMIT), -REWARD_ABS_LIMIT)
-                # ---自动统计reward分布---
-                if not hasattr(self, '_reward_anomaly_counter'):
-                    self._reward_anomaly_counter = {'>limit': 0, '<-limit': 0, 'normal': 0}
-                if episode_reward >= REWARD_ABS_LIMIT:
-                    self._reward_anomaly_counter['>limit'] += 1
-                elif episode_reward <= -REWARD_ABS_LIMIT:
-                    self._reward_anomaly_counter['<-limit'] += 1
-                else:
-                    self._reward_anomaly_counter['normal'] += 1
-                if (episode+1) % 1000 == 0:
-                    print(f"[REWARD-ANALYSIS] 近1000局 reward 超上限: {self._reward_anomaly_counter['>limit']}，超下限: {self._reward_anomaly_counter['<-limit']}，正常: {self._reward_anomaly_counter['normal']}")
-                    self._reward_anomaly_counter = {'>limit': 0, '<-limit': 0, 'normal': 0}
-                self.average_rewards.append(episode_reward)
-                self.episode_steps_history.append(episode_steps)
-                self.illegal_action_count_history.append(illegal_action_count)
-                self.queenbee_step_history.append(queenbee_step)
-                self.end_stats_history.append(end_stats.copy())
-                end_stats = {k: 0 for k in end_stats}
-                print(f"Episode {episode+1}, Reward: {episode_reward:.2f}, Epsilon: {self.player1_ai.epsilon:.4f}")
-                episode += 1
+                
+                # 更新当前episode数据
+                current_episode_data = {
+                    'episode_reward': episode_reward,
+                    'episode_steps': episode_steps,
+                    'illegal_action_count': illegal_action_count,
+                    'queenbee_step': queenbee_step,
+                    'info': info,
+                    'terminated': terminated
+                }
+                episode_transition_count += 1
+                
+                # 只有当这一步确实结束了episode时，才进行终局统计和记录
+                if terminated:
+                    reason = info.get('reason', '') if isinstance(info, dict) else ''
+                    
+                    # 修复：严格基于游戏逻辑的reason进行分类，不依赖reward
+                    # 这确保分类反映真实的游戏结果，而不是reward shaping的副作用
+                    
+                    if reason == 'max_turns_reached':
+                        end_stats['max_turns'] += 1
+                    elif reason in ['board_full_draw', 'draw']:
+                        end_stats['draw'] += 1
+                    elif reason == 'player1_win':
+                        # 玩家1获胜：对于当前玩家来说是胜利还是失败？
+                        # 这里需要知道当前是谁的回合
+                        # 但是由于parallel_sampler的设计，我们总是从玩家1视角统计
+                        end_stats['win'] += 1
+                    elif reason == 'player2_win':
+                        # 玩家2获胜：对于玩家1来说是失败
+                        end_stats['lose'] += 1
+                    elif reason == 'queen_surrounded':
+                        # 蜂后被围：失败
+                        end_stats['lose'] += 1
+                    elif reason == 'no_legal_action':
+                        end_stats['other'] += 1
+                    elif reason == 'must_place_queen_violation':
+                        end_stats['other'] += 1
+                    elif reason == 'illegal_action':
+                        end_stats['other'] += 1
+                    elif reason == 'unknown_termination':
+                        # 异常终止，原因未知
+                        end_stats['other'] += 1
+                    elif reason == '':
+                        # reason为空的情况：这是最大的问题！
+                        # 在这种情况下，我们需要依赖其他信息来判断
+                        # 临时使用reward作为最后手段，但这不是最佳解决方案
+                        if abs(episode_reward) < 0.01:
+                            end_stats['draw'] += 1  # 接近0奖励可能是平局或超时
+                        elif episode_reward > 0:
+                            end_stats['win'] += 1   # 暂时处理
+                        else:
+                            end_stats['lose'] += 1  # 暂时处理
+                        
+                        # 记录reason为空的情况，用于调试
+                        if not hasattr(self, '_empty_reason_count'):
+                            self._empty_reason_count = 0
+                        self._empty_reason_count += 1
+                    else:
+                        # 未知的reason
+                        end_stats['other'] += 1
+                        if not hasattr(self, '_unknown_reasons'):
+                            self._unknown_reasons = set()
+                        self._unknown_reasons.add(reason)
+                    
+                    # 调试信息：记录reason分布和空reason情况
+                    if not hasattr(self, '_reason_debug_count'):
+                        self._reason_debug_count = {}
+                    if reason not in self._reason_debug_count:
+                        self._reason_debug_count[reason] = 0
+                    self._reason_debug_count[reason] += 1
+                    
+                    # 每1000个episode打印一次reason统计和空reason数量
+                    if episode % 1000 == 0 and episode > 0:
+                        print(f"[REASON-DEBUG] Episode {episode} - Reason统计:")
+                        for r, count in self._reason_debug_count.items():
+                            print(f"  '{r}': {count}")
+                        
+                        if hasattr(self, '_empty_reason_count'):
+                            print(f"  空reason数量: {self._empty_reason_count}")
+                            
+                        if hasattr(self, '_unknown_reasons'):
+                            print(f"  未知reasons: {self._unknown_reasons}")
+                            
+                        self._reason_debug_count = {}  # 重置计数器
+                    
+                    # 记录episode级别的统计
+                    self.average_rewards.append(episode_reward)
+                    self.episode_steps_history.append(episode_steps)
+                    self.illegal_action_count_history.append(illegal_action_count)
+                    self.queenbee_step_history.append(queenbee_step)
+                    self.end_stats_history.append(end_stats.copy())
+                    
+                    # Epsilon管理：课程学习优先，否则使用简单衰减
+                    if curriculum_epsilon_config is not None:
+                        # 课程学习的线性epsilon衰减
+                        episodes_in_phase = episode
+                        if episodes_in_phase < curriculum_epsilon_config['decay_episodes']:
+                            progress = episodes_in_phase / curriculum_epsilon_config['decay_episodes']
+                            current_epsilon = (curriculum_epsilon_config['start'] * (1 - progress) + 
+                                             curriculum_epsilon_config['end'] * progress)
+                            self.player1_ai.epsilon = max(current_epsilon, curriculum_epsilon_config['end'])
+                            self.player2_ai.epsilon = max(current_epsilon, curriculum_epsilon_config['end'])
+                        else:
+                            self.player1_ai.epsilon = curriculum_epsilon_config['end']
+                            self.player2_ai.epsilon = curriculum_epsilon_config['end']
+                    elif episode > 0 and epsilon_decay < 1.0 and episode % 1000 == 0:
+                        # 独立训练时的简单epsilon衰减
+                        self.player1_ai.epsilon = max(self.player1_ai.epsilon * epsilon_decay, min_epsilon)
+                        self.player2_ai.epsilon = max(self.player2_ai.epsilon * epsilon_decay, min_epsilon)
+                    
+                    # ---reward异常检测与上限保护---
+                    REWARD_ABS_LIMIT = 200  # 正常Hive终局奖励绝不应超过±200
+                    if abs(episode_reward) > REWARD_ABS_LIMIT:
+                        print(f"[WARN][REWARD] Episode {episode+1} reward异常: {episode_reward:.2f}，请检查reward shaping/终局奖励/循环。")
+                        # reward上限保护，截断极端reward，防止AI刷分
+                        episode_reward = max(min(episode_reward, REWARD_ABS_LIMIT), -REWARD_ABS_LIMIT)
+                    
+                    # ---自动统计reward分布---
+                    if not hasattr(self, '_reward_anomaly_counter'):
+                        self._reward_anomaly_counter = {'>limit': 0, '<-limit': 0, 'normal': 0}
+                    if episode_reward >= REWARD_ABS_LIMIT:
+                        self._reward_anomaly_counter['>limit'] += 1
+                    elif episode_reward <= -REWARD_ABS_LIMIT:
+                        self._reward_anomaly_counter['<-limit'] += 1
+                    else:
+                        self._reward_anomaly_counter['normal'] += 1
+                    if (episode+1) % 1000 == 0:
+                        print(f"[REWARD-ANALYSIS] 近1000局 reward 超上限: {self._reward_anomaly_counter['>limit']}，超下限: {self._reward_anomaly_counter['<-limit']}，正常: {self._reward_anomaly_counter['normal']}")
+                        self._reward_anomaly_counter = {'>limit': 0, '<-limit': 0, 'normal': 0}
+                    
+                    # 重置统计计数器
+                    end_stats = {k: 0 for k in end_stats}
+                    episode_transition_count = 0
+                    
+                    # 打印episode信息
+                    print(f"Episode {episode+1}, Cumulative: {episode_reward:.2f}, Steps: {episode_steps}, Reason: {reason}, Epsilon: {self.player1_ai.epsilon:.4f}")
+                    episode += 1
         except KeyboardInterrupt:
             print("\n[INFO] 检测到Ctrl+C，正在保存模型和reward曲线...")
             self._save_checkpoint()
             print("[断点续训] 已保存断点，可下次继续训练。")
         finally:
-            print("[INFO] 训练已结束，模型和统计已保存。")
+            # 终止所有worker，防止遗留进程影响后续阶段
+            for w in workers:
+                try:
+                    w.terminate()
+                    w.join()
+                except Exception:
+                    pass
+            print("[INFO] 所有worker已终止，训练结束。")
 
     def _save_checkpoint(self):
         reward_file = os.path.join(self.model_dir, f"{self.run_prefix}_reward_history.npy")
@@ -398,17 +552,117 @@ class AITrainer:
         print(f"[Parallel Self-Play] Completed {num_episodes} episodes with {num_workers} workers.")
         self._save_checkpoint()
 
-    def curriculum_train(self, episodes_per_level=5000):
-        """Curriculum training: multi-stage self-play training."""
-        levels = [
-            {'id': 1, 'desc': '放置蜂后阶段'},
-            {'id': 2, 'desc': '全动作阶段'}
-        ]
-        for lvl in levels:
-            print(f"[Curriculum] Level {lvl['id']}: {lvl['desc']}，训练局数={episodes_per_level}")
-            # 在此可根据 lvl 配置调整 env 规则，如仅允许放置蜂后等
-            self.self_play_train(num_episodes=episodes_per_level)
-        print("[Curriculum] 课程学习所有阶段训练完成，保存模型。")
+    def curriculum_train(self):
+        """改进的课程学习: 使用科学的奖励整形系统"""
+        # 保存原始环境设置
+        original_reward_shaper = getattr(self.env, 'reward_shaper', None)
+        
+        # 导入新的奖励整形系统
+        try:
+            from improved_reward_shaping import create_curriculum_phases, HiveRewardShaper
+            phases = create_curriculum_phases()
+            print("[Curriculum] 使用改进的奖励整形系统")
+        except ImportError:
+            print("[Curriculum] 奖励整形系统未找到，使用原有配置")
+            # 基于实际项目复杂度和计算资源的平衡配置
+            # 网络参数: ~140万, 状态空间: 820维, 动作空间: 20000
+            # 优化后训练配置: 确保充分收敛 (~3-4小时训练)
+            phases = [
+                {'name': 'foundation', 'episodes': 40000, 'description': '基础棋规学习 - 掌握合法动作和基本规则', 'reward_shaper': None, 'epsilon_start': 0.9, 'epsilon_end': 0.4, 'epsilon_decay_episodes': 5000},
+                {'name': 'strategy',   'episodes': 50000, 'description': '策略学习增强 - 中级战术和位置判断', 'reward_shaper': None, 'epsilon_start': 0.4, 'epsilon_end': 0.15, 'epsilon_decay_episodes': 8000},
+                {'name': 'mastery',    'episodes': 30000, 'description': '精通阶段 - 高级策略优化',     'reward_shaper': None, 'epsilon_start': 0.15, 'epsilon_end': 0.05, 'epsilon_decay_episodes': 6000},
+            ]
+        
+        total_episodes_before = len(self.average_rewards) if self.average_rewards else 0
+        total_episodes_target = sum(phase['episodes'] for phase in phases)
+        
+        print(f"[Curriculum] 总训练目标: {total_episodes_target:,} episodes")
+        print(f"[Curriculum] 预计时间: 3-4小时 (10并发)")
+        
+        for phase_idx, phase in enumerate(phases):
+            print(f"\n[Curriculum] 阶段 {phase_idx+1}/3: {phase['name']}")
+            print(f"[Curriculum] 描述: {phase['description']}")
+            print(f"[Curriculum] 本阶段episodes: {phase['episodes']:,}")
+            print(f"[Curriculum] Epsilon: {phase['epsilon_start']} -> {phase['epsilon_end']}")
+            print(f"[Curriculum] 按Ctrl+C进入下一阶段，连按两次完全退出")
+            
+            # 设置奖励整形器
+            reward_shaper = phase.get('reward_shaper')
+            if reward_shaper:
+                print(f"[Curriculum] 使用奖励整形: {phase['name']} 阶段")
+                self.env.reward_shaper = reward_shaper
+            else:
+                print(f"[Curriculum] 阶段 {phase['name']} 未配置奖励整形器，使用原始奖励系统")
+            
+            # 设置epsilon参数
+            self.player1_ai.epsilon = phase['epsilon_start']
+            self.player2_ai.epsilon = phase['epsilon_start']
+            
+            # 配置epsilon线性衰减 - 直接在训练循环中管理，不再需要update_epsilon方法
+            epsilon_decay_episodes = phase.get('epsilon_decay_episodes', 5000)
+            
+            # 记录这个阶段的参数，供训练循环使用
+            phase_epsilon_config = {
+                'start': phase['epsilon_start'],
+                'end': phase['epsilon_end'],
+                'decay_episodes': epsilon_decay_episodes,
+                'total_episodes_before': total_episodes_before
+            }
+            
+            # 连续训练整个阶段 - 不再分批
+            episodes_before = len(self.average_rewards) if self.average_rewards else 0
+            
+            try:
+                print(f"[Curriculum] 开始连续训练 {phase['episodes']:,} episodes...")
+                
+                # 关键改进：连续训练，禁用train()内部的epsilon衰减
+                self.train(
+                    max_episodes=phase['episodes'], 
+                    num_workers=10, 
+                    epsilon_decay=1.0,  # 禁用内部epsilon衰减
+                    min_epsilon=0.0,    # 不限制最小值
+                    curriculum_epsilon_config=phase_epsilon_config  # 传递epsilon配置
+                )
+                
+                episodes_after = len(self.average_rewards) if self.average_rewards else 0
+                actual_trained = episodes_after - episodes_before
+                
+                print(f"[Curriculum] 阶段 {phase['name']} 完成，实际训练: {actual_trained:,} episodes")
+                print(f"[Curriculum] 最终Epsilon: P1={self.player1_ai.epsilon:.3f}, P2={self.player2_ai.epsilon:.3f}")
+                
+            except KeyboardInterrupt:
+                print(f"\n[Curriculum] 阶段 {phase['name']} 被中断")
+                user_choice = input("输入'next'跳到下一阶段，'exit'退出，其他继续: ").strip().lower()
+                
+                if user_choice == 'exit':
+                    print("[Curriculum] 用户选择退出课程学习")
+                    break
+                elif user_choice == 'next':
+                    print(f"[Curriculum] 跳过阶段 {phase['name']}，进入下一阶段")
+                    continue
+                else:
+                    print(f"[Curriculum] 继续阶段 {phase['name']}")
+                    # 计算剩余episodes继续训练
+                    episodes_after = len(self.average_rewards) if self.average_rewards else 0
+                    remaining = phase['episodes'] - (episodes_after - episodes_before)
+                    if remaining > 0:
+                        self.train(
+                            max_episodes=remaining, 
+                            num_workers=10,
+                            epsilon_decay=1.0,  # 禁用内部epsilon衰减
+                            min_epsilon=0.0,
+                            curriculum_epsilon_config=phase_epsilon_config  # 传递epsilon配置
+                        )
+            
+            total_episodes_before += phase['episodes']
+            
+        # 恢复原始设置
+        self.env.reward_shaper = original_reward_shaper
+        
+        total_episodes_after = len(self.average_rewards) if self.average_rewards else 0
+        print(f"\n[Curriculum] 课程学习完成!")
+        print(f"[Curriculum] 总训练episodes: {total_episodes_after:,}")
+        print(f"[Curriculum] 新增episodes: {total_episodes_after - (total_episodes_after - total_episodes_target):,}")
         self._save_checkpoint()
 
 

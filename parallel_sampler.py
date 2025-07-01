@@ -3,20 +3,43 @@ from hive_env import HiveEnv, Action
 from ai_player import AIPlayer
 import numpy as np
 
-def worker_process(queue, player_args, env_args, episode_per_worker=1):
+def worker_process(queue, player_args, env_args, episode_per_worker=1, reward_shaper_config=None):
+    # 支持从 env_args 传入 reward shaping 函数
+    shaping_func = env_args.pop('reward_shaping_func', None)
     env = HiveEnv(**env_args)
+    
+    # 修复：正确传递和创建reward_shaper
+    if reward_shaper_config:
+        try:
+            from improved_reward_shaping import HiveRewardShaper
+            phase = reward_shaper_config.get('phase', 'foundation')
+            env.reward_shaper = HiveRewardShaper(phase)
+            print(f"[Worker] 成功加载奖励整形器: {phase}")
+        except ImportError:
+            print("[Worker] 奖励整形模块未找到，使用原始奖励")
+    
+    # 如果传入 shaping_func，则包装 step (向后兼容)
+    if shaping_func is not None:
+        original_step = env.step
+        def shaped_step(action):
+            obs, reward, terminated, truncated, info = original_step(action)
+            return obs, shaping_func(reward, terminated), terminated, truncated, info
+        env.step = shaped_step
     ai = AIPlayer(**player_args)
-    while True:
-        for _ in range(episode_per_worker):
-            obs, info = env.reset()
-            terminated = False
-            truncated = False
-            episode_reward = 0.0
-            episode_steps = 0
-            illegal_action_count = 0
-            queenbee_step = -1
-            current_player_idx = env.current_player_idx
-            while not terminated and not truncated:
+    
+    # 修复：添加episode计数器限制，防止无限循环
+    episode_count = 0
+    while episode_count < episode_per_worker:  # 修复：使用计数器限制
+        obs, info = env.reset()
+        terminated = False
+        truncated = False
+        episode_reward = 0.0
+        episode_steps = 0
+        illegal_action_count = 0
+        queenbee_step = -1
+        current_player_idx = env.current_player_idx
+        
+        while not terminated and not truncated:
                 legal_actions = env.get_legal_actions()
                 # ---蜂后未落兜底---
                 if not legal_actions:
@@ -25,7 +48,9 @@ def worker_process(queue, player_args, env_args, episode_per_worker=1):
                     if not getattr(current_player, 'is_queen_bee_placed', False):
                         # 生成所有可放蜂后动作
                         queenbee_actions = []
-                        for a in range(env.action_space.n):
+                        # 避免静态类型报错，动态获取 action_space.n
+                        total_actions = getattr(env.action_space, 'n', 0)
+                        for a in range(total_actions):
                             try:
                                 decoded = Action.decode_action(a)
                                 if decoded[0] == 'place' and decoded[5] == 0:
@@ -50,9 +75,17 @@ def worker_process(queue, player_args, env_args, episode_per_worker=1):
                 next_obs, reward, terminated, truncated, info = env.step(action)
                 episode_reward += reward
                 episode_steps += 1
-                # put 10元组，结构与主进程一致
-                queue.put((obs, action, reward, next_obs, terminated, episode_reward, episode_steps, illegal_action_count, queenbee_step, info))
+                
+                # 只在episode结束时put数据，大幅提升性能
+                # 同时，worker不进行训练，训练留给主进程统一处理
+                if terminated or truncated:
+                    # put 10元组，只在episode结束时发送
+                    queue.put((obs, action, reward, next_obs, terminated, episode_reward, episode_steps, illegal_action_count, queenbee_step, info))
+                
                 obs = next_obs
+        
+        # 完成一个episode，增加计数器
+        episode_count += 1
 
 # 主进程示例
 if __name__ == '__main__':
