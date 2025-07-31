@@ -32,15 +32,16 @@ def display_main_menu():
     print("\033[97m2. Human vs AI\033[0m")
     print("\033[97m3. AI Training\033[0m")
     print("\033[97m4. Evaluate AI & Plots\033[0m")
+    print("\033[97m5. Real-time Training Monitor\033[0m")  # 新增实时监控选项
     
     # 亮红色退出选项
-    print("\033[91m5. Exit Game\033[0m")
+    print("\033[91m6. Exit Game\033[0m")
     
     # 青色分隔线
     print("\033[96m" + "═" * 24 + "\033[0m")
     
     # 黄色输入提示
-    return input("\033[93m› Choose an option (1-5): \033[0m").strip()
+    return input("\033[93m› Choose an option (1-6): \033[0m").strip()
 
 def get_player_names():
     player1_name = input("Enter Player 1's name: ").strip()
@@ -478,6 +479,102 @@ def evaluate_menu():
             print("Invalid choice. Please choose a number between 1 and 5.")
             input("Press Enter to continue...")
 
+def real_time_monitor_menu():
+    """实时训练监控菜单"""
+    clear_screen()
+    print("\033[96m" + "═" * 32 + "\033[0m")
+    print("\033[93m📊 实时训练监控\033[0m")
+    print("\033[96m" + "═" * 32 + "\033[0m")
+    
+    try:
+        # 检查是否有训练数据
+        if not os.path.exists("models"):
+            print("\033[91m❌ 未找到models目录！\033[0m")
+            print("请先开始AI训练")
+            input("\nPress Enter to return...")
+            return
+        
+        # 查找是否有奖励文件
+        import glob
+        reward_files = glob.glob("models/*/DQN_reward_history.npy") + glob.glob("models/*/*_reward_history.npy")
+        
+        if not reward_files:
+            print("\033[91m❌ 未找到训练数据文件！\033[0m")
+            print("请确保:")
+            print("  1. 已开始AI训练")
+            print("  2. 训练至少完成了几个episodes")
+            print("  3. models/目录下有*_reward_history.npy文件")
+            print("")
+            print("支持的文件路径:")
+            print("  - models/*/DQN_reward_history.npy")
+            print("  - models/*/*_reward_history.npy")
+            input("\nPress Enter to return...")
+            return
+        
+        # 显示找到的文件
+        print(f"\033[92m✅ 找到 {len(reward_files)} 个训练文件\033[0m")
+        latest_file = max(reward_files, key=lambda x: os.path.getmtime(x))
+        print(f"最新文件: {latest_file}")
+        print("")
+        
+        # 尝试导入简化版监控器
+        try:
+            from start_monitor import SimpleRealTimeMonitor
+            
+            print("\033[97m正在启动简化版实时监控...\033[0m")
+            print("\033[90m提示: 这是一个简化版，专门为训练过程设计\033[0m")
+            print("")
+            
+            # 创建监控器
+            monitor = SimpleRealTimeMonitor(update_interval=5)  # 5秒更新一次
+            
+            print("\033[92m✅ 监控器已启动\033[0m")
+            print("\033[90m使用提示:")
+            print("  - 自动每5秒更新数据")
+            print("  - 关闭图表窗口退出监控")
+            print("  - 支持实时显示奖励曲线和统计\033[0m")
+            print("")
+            
+            # 启动监控
+            monitor.start()
+            
+        except ImportError:
+            # 尝试导入完整版监控器
+            try:
+                from real_time_monitor import RealTimeTrainingMonitor
+                
+                print("\033[97m正在启动完整版实时监控...\033[0m")
+                print("\033[90m提示: 如果启动失败，请使用简化版\033[0m")
+                print("")
+                
+                # 创建监控器
+                monitor = RealTimeTrainingMonitor(update_interval=5)
+                
+                print("\033[92m✅ 监控器已启动\033[0m")
+                print("\033[90m快捷键提示:")
+                print("  R - 重置视图")
+                print("  S - 保存截图") 
+                print("  Q - 退出监控")
+                print("  关闭窗口 - 返回主菜单\033[0m")
+                print("")
+                
+                # 启动监控
+                monitor.start_monitoring()
+                
+            except ImportError as e:
+                print(f"\033[91m❌ 导入监控模块失败: {e}\033[0m")
+                print("请确保matplotlib等依赖已正确安装:")
+                print("  pip install matplotlib numpy")
+                
+    except Exception as e:
+        print(f"\033[91m❌ 启动监控失败: {e}\033[0m")
+        print("建议:")
+        print("  1. 确保训练正在进行")
+        print("  2. 检查文件权限")
+        print("  3. 重启程序重试")
+    
+    input("\nPress Enter to return to main menu...")
+
 def main():
     game = Game.get_instance()
     
@@ -499,10 +596,12 @@ def main():
         elif main_menu_choice == '4':
             evaluate_menu()
         elif main_menu_choice == '5':
+            real_time_monitor_menu()
+        elif main_menu_choice == '6':
             print("Exiting game. Goodbye!")
             break
         else:
-            print("Invalid option. Please choose a number between 1 and 5.")
+            print("Invalid option. Please choose a number between 1 and 6.")
             input("\nPress Enter to continue...")
 
 if __name__ == "__main__":

@@ -1,45 +1,58 @@
 import multiprocessing as mp
+import signal
+import sys
 from hive_env import HiveEnv, Action
 from ai_player import AIPlayer
 import numpy as np
 
 def worker_process(queue, player_args, env_args, episode_per_worker=1, reward_shaper_config=None, epsilon_sync_queue=None):
-    # 支持从 env_args 传入 reward shaping 函数
-    shaping_func = env_args.pop('reward_shaping_func', None)
-    env = HiveEnv(**env_args)
+    """Worker进程函数，增强信号处理"""
     
-    # 修复：正确传递和创建reward_shaper
-    if reward_shaper_config:
-        try:
-            from improved_reward_shaping import HiveRewardShaper
-            phase = reward_shaper_config.get('phase', 'foundation')
-            env.reward_shaper = HiveRewardShaper(phase)
-            print(f"[Worker] 成功加载奖励整形器: {phase}")
-        except ImportError:
-            print("[Worker] 奖励整形模块未找到，使用原始奖励")
+    # 设置信号处理 - worker进程忽略SIGINT，让主进程处理
+    def signal_handler(signum, frame):
+        print(f"[Worker] 收到信号 {signum}，正在优雅退出...")
+        sys.exit(0)
     
-    # 如果传入 shaping_func，则包装 step (向后兼容)
-    if shaping_func is not None:
-        original_step = env.step
-        def shaped_step(action):
-            obs, reward, terminated, truncated, info = original_step(action)
-            return obs, shaping_func(reward, terminated), terminated, truncated, info
-        env.step = shaped_step
-    ai = AIPlayer(**player_args)
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
-    # 修复：添加episode计数器限制，防止无限循环
-    episode_count = 0
-    while episode_count < episode_per_worker:  # 修复：使用计数器限制
-        # 检查epsilon同步队列
-        if epsilon_sync_queue is not None:
+    try:
+        # 支持从 env_args 传入 reward shaping 函数
+        shaping_func = env_args.pop('reward_shaping_func', None)
+        env = HiveEnv(**env_args)
+        
+        # 修复：正确传递和创建reward_shaper
+        if reward_shaper_config:
             try:
-                # 非阻塞检查是否有新的epsilon值
-                new_epsilon = epsilon_sync_queue.get_nowait()
-                ai.epsilon = new_epsilon
-                print(f"[Worker] 更新epsilon: {new_epsilon:.4f}")
-            except:
-                # 队列为空，继续使用当前epsilon
-                pass
+                from improved_reward_shaping import HiveRewardShaper
+                phase = reward_shaper_config.get('phase', 'foundation')
+                env.reward_shaper = HiveRewardShaper(phase)
+                print(f"[Worker] 成功加载奖励整形器: {phase}")
+            except ImportError:
+                print("[Worker] 奖励整形模块未找到，使用原始奖励")
+        
+        # 如果传入 shaping_func，则包装 step (向后兼容)
+        if shaping_func is not None:
+            original_step = env.step
+            def shaped_step(action):
+                obs, reward, terminated, truncated, info = original_step(action)
+                return obs, shaping_func(reward, terminated), terminated, truncated, info
+            env.step = shaped_step
+        ai = AIPlayer(**player_args)
+        
+        # 修复：添加episode计数器限制，防止无限循环
+        episode_count = 0
+        while episode_count < episode_per_worker:  # 修复：使用计数器限制
+            # 检查epsilon同步队列
+            if epsilon_sync_queue is not None:
+                try:
+                    # 非阻塞检查是否有新的epsilon值
+                    new_epsilon = epsilon_sync_queue.get_nowait()
+                    ai.epsilon = new_epsilon
+                    print(f"[Worker] 更新epsilon: {new_epsilon:.4f}")
+                except:
+                    # 队列为空，继续使用当前epsilon
+                    pass
         
         obs, info = env.reset()
         terminated = False
@@ -97,6 +110,12 @@ def worker_process(queue, player_args, env_args, episode_per_worker=1, reward_sh
         
         # 完成一个episode，增加计数器
         episode_count += 1
+    
+    except Exception as e:
+        print(f"[Worker] 发生异常: {e}")
+        print("[Worker] 正在退出...")
+    finally:
+        print("[Worker] Worker进程正常退出")
 
 # 主进程示例
 if __name__ == '__main__':

@@ -25,28 +25,28 @@ class HiveRewardShaper:
         self.phase = phase
         self.step_count = 0
         
-        # 不同阶段的奖励权重配置
+        # 不同阶段的奖励权重配置 - 修复后的渐进式配置
         self.phase_configs = {
             'foundation': {
-                'survival_weight': 0.02,     # 进一步降低存活奖励权重
-                'action_weight': 0.05,       # 进一步降低动作奖励权重
-                'strategy_weight': 0.50,     # 大幅提升战略奖励权重 (0.25 -> 0.50)
-                'terminal_weight': 0.43,     # 适当降低终局奖励权重 (0.60 -> 0.43)
-                'illegal_penalty': -8.0,     # 进一步提升非法动作惩罚
+                'survival_weight': 0.08,     # 基础阶段适度的存活权重
+                'action_weight': 0.20,       # 重视基础动作学习，帮助掌握规则
+                'strategy_weight': 0.25,     # 基础战略权重，不宜过高
+                'terminal_weight': 0.47,     # 重视终局结果学习
+                'illegal_penalty': -5.0,     # 适度惩罚，避免过于严厉
             },
             'strategy': {
-                'survival_weight': 0.01,
-                'action_weight': 0.04,
-                'strategy_weight': 0.65,     # 策略阶段更重视战略 (0.40 -> 0.65)
-                'terminal_weight': 0.30,     # 降低终局权重 (0.50 -> 0.30)
-                'illegal_penalty': -6.0,     # 提升非法动作惩罚
+                'survival_weight': 0.05,     # 降低存活权重
+                'action_weight': 0.15,       # 降低动作权重
+                'strategy_weight': 0.45,     # 渐进提升战略权重
+                'terminal_weight': 0.35,     # 降低终局权重，平衡学习
+                'illegal_penalty': -6.0,     # 适度提升惩罚
             },
             'mastery': {
-                'survival_weight': 0.01,
-                'action_weight': 0.04,
-                'strategy_weight': 0.45,     # 精通阶段平衡战略和终局 (0.30 -> 0.45)
-                'terminal_weight': 0.50,     # 适当提升终局权重 (0.63 -> 0.50)
-                'illegal_penalty': -8.0,     # 最严惩罚，与基础阶段一致
+                'survival_weight': 0.03,     # 最低存活权重
+                'action_weight': 0.12,       # 最低动作权重  
+                'strategy_weight': 0.50,     # 最高战略权重
+                'terminal_weight': 0.35,     # 平衡的终局权重
+                'illegal_penalty': -7.0,     # 最严惩罚
             }
         }
         
@@ -114,26 +114,26 @@ class HiveRewardShaper:
             )
             strategy_reward = surround_progress + defense_progress
         
-        # 5. 终局奖励 (进一步降低，避免权重加成后过高)
+        # 5. 终局奖励 (重新平衡，避免过度奖励)
         terminal_reward = 0.0
         if terminated:
             if reason in ['player1_win', 'player2_win']:
-                # 胜利奖励：基础+速度奖励，进一步降低
-                base_win_reward = 2.0  # 从5.0降低到2.0
-                speed_bonus = max(0.0, (100 - turn_count) / 100 * 0.5)  # 从2.0降低到0.5
+                # 胜利奖励：基础+适度速度奖励
+                base_win_reward = 3.0  # 适中的基础胜利奖励
+                speed_bonus = max(0.0, (80 - turn_count) / 80 * 1.0)  # 适度的速度奖励
                 terminal_reward = base_win_reward + speed_bonus
                 # 根据原始奖励正负性调整
                 if original_reward < 0:
                     terminal_reward = -terminal_reward
             elif reason == 'queen_surrounded':
-                terminal_reward = -2.5  # 从-6.0降低到-2.5
+                terminal_reward = -3.5  # 适度的失败惩罚
             elif reason == 'draw':
                 # 平局：根据包围优势给予微调
                 surround_advantage = opp_queen_surrounded_count - my_queen_surrounded_count
-                terminal_reward = np.clip(surround_advantage * 0.2, -0.5, 0.5)  # 从0.5降低到0.2
+                terminal_reward = np.clip(surround_advantage * 0.3, -0.8, 0.8)  # 适度的平局调整
             elif reason in ['max_turns_reached', 'no_legal_action']:
-                # 降低超时和无合法动作的惩罚
-                terminal_reward = -1.0  # 从-3.0降低到-1.0
+                # 适度的超时和无合法动作惩罚
+                terminal_reward = -1.5
         
         # 6. 加权组合
         final_reward = (
@@ -143,8 +143,8 @@ class HiveRewardShaper:
             terminal_reward * self.config['terminal_weight']
         )
         
-        # 7. 最终裁剪到合理范围 (进一步缩小范围)
-        final_reward = np.clip(final_reward, -5.0, 5.0)
+        # 7. 最终裁剪到合理范围 (更严格的范围控制)
+        final_reward = np.clip(final_reward, -3.0, 3.0)
         
         return final_reward
     

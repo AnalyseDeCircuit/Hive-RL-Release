@@ -6,11 +6,18 @@ import numpy as np
 import json
 import torch
 import time
+import signal
+import sys
+import atexit
 from hive_env import HiveEnv
 from ai_player import AIPlayer
 from game import Game
 from board import ChessBoard
 import multiprocessing as mp
+
+# 全局变量存储worker进程，用于退出时清理
+_global_workers = []
+_global_pools = []
 
 # 模块级 reward shaping 函数，确保可被 multiprocessing pickle
 def _shaping_transition(r, term):
@@ -45,6 +52,90 @@ def _init_worker():
     import signal
     # 忽略 SIGINT，让主进程处理
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+# 强制清理所有后台进程
+def _cleanup_all_processes():
+    """强制清理所有后台进程和线程"""
+    global _global_workers, _global_pools
+    
+    print("\n[Cleanup] 正在强制清理所有后台进程...")
+    
+    # 清理worker进程
+    for worker in _global_workers:
+        if worker.is_alive():
+            print(f"[Cleanup] 终止worker进程 {worker.pid}")
+            worker.terminate()
+            worker.join(timeout=2)
+            if worker.is_alive():
+                print(f"[Cleanup] 强制杀死worker进程 {worker.pid}")
+                try:
+                    import psutil
+                    process = psutil.Process(worker.pid)
+                    process.kill()
+                except:
+                    pass
+    
+    # 清理进程池
+    for pool in _global_pools:
+        try:
+            pool.terminate()
+            pool.join(timeout=2)
+        except:
+            pass
+    
+    # 清空列表
+    _global_workers.clear()
+    _global_pools.clear()
+    
+    print("[Cleanup] 进程清理完成")
+
+def _cleanup_workers(workers):
+    """清理指定的worker进程列表"""
+    print(f"\n[Cleanup] 正在清理 {len(workers)} 个worker进程...")
+    
+    for i, worker in enumerate(workers):
+        if worker.is_alive():
+            print(f"[Cleanup] 终止worker {i+1}/{len(workers)} (PID: {worker.pid})")
+            worker.terminate()
+            worker.join(timeout=3)
+            
+            if worker.is_alive():
+                print(f"[Cleanup] 强制杀死worker {i+1}/{len(workers)} (PID: {worker.pid})")
+                try:
+                    # 尝试使用 psutil 强制杀死进程
+                    import psutil
+                    process = psutil.Process(worker.pid)
+                    process.kill()
+                    worker.join(timeout=1)
+                except ImportError:
+                    # 如果没有 psutil，使用系统级杀死
+                    try:
+                        import os
+                        if os.name == 'nt':  # Windows
+                            os.system(f"taskkill /F /PID {worker.pid}")
+                        else:  # Unix/Linux
+                            os.system(f"kill -9 {worker.pid}")
+                    except:
+                        pass
+                except:
+                    pass
+    
+    print("[Cleanup] Worker进程清理完成")
+
+# 注册退出清理函数
+atexit.register(_cleanup_all_processes)
+
+# 信号处理函数
+def _signal_handler(signum, frame):
+    """信号处理函数，确保优雅退出"""
+    print(f"\n[Signal] 收到信号 {signum}，开始清理...")
+    _cleanup_all_processes()
+    print("[Signal] 清理完成，退出程序")
+    sys.exit(0)
+
+# 注册信号处理器
+signal.signal(signal.SIGINT, _signal_handler)
+signal.signal(signal.SIGTERM, _signal_handler)
 
 class AITrainer:
     def __init__(self, model_path=None, force_new=False, custom_dir=None, custom_prefix=None, use_dlc=False):
@@ -181,6 +272,8 @@ class AITrainer:
             w.daemon = True
             w.start()
             workers.append(w)
+            # 添加到全局列表用于清理
+            _global_workers.append(w)
         
         print(f"[Trainer] 启动 {num_workers} 个worker，初始epsilon: {self.player1_ai.epsilon:.4f}")
         
@@ -324,6 +417,11 @@ class AITrainer:
                     self.queenbee_step_history.append(queenbee_step)
                     self.end_stats_history.append(end_stats.copy())
                     
+                    # 实时保存奖励数据，供监控器读取
+                    if episode % 10 == 0:  # 每10个episode保存一次，减少IO开销
+                        reward_file = os.path.join(self.model_dir, f"{self.run_prefix}_reward_history.npy")
+                        np.save(reward_file, np.array(self.average_rewards))
+                    
                     # Epsilon管理：课程学习优先，否则使用简单衰减
                     old_epsilon = self.player1_ai.epsilon
                     if curriculum_epsilon_config is not None:
@@ -387,12 +485,17 @@ class AITrainer:
             print("\n[INFO] 检测到Ctrl+C，正在保存模型和reward曲线...")
             self._save_checkpoint()
             print("[断点续训] 已保存断点，可下次继续训练。")
+            # 立即强制终止所有worker进程
+            _cleanup_workers(workers)
+            raise  # 重新抛出异常以便上层处理
         finally:
-            # 终止所有worker，防止遗留进程影响后续阶段
+            # 确保所有worker都被正确清理
+            _cleanup_workers(workers)
+            # 从全局列表中移除已清理的worker
             for w in workers:
                 try:
-                    w.terminate()
-                    w.join()
+                    if w in _global_workers:
+                        _global_workers.remove(w)
                 except Exception:
                     pass
             print("[INFO] 所有worker已终止，训练结束。")
@@ -536,6 +639,7 @@ class AITrainer:
         
         # 使用带有初始化函数的进程池
         pool = mp.Pool(processes=num_workers, initializer=_init_worker)
+        _global_pools.append(pool)  # 添加到全局列表用于清理
         results = []
         
         try:
@@ -562,11 +666,21 @@ class AITrainer:
             pool.terminate()
             pool.join()
             print(f"[Parallel Self-Play] Collected {len(results)} episodes before interruption")
+            # 从全局列表中移除
+            if pool in _global_pools:
+                _global_pools.remove(pool)
             # Propagate interrupt to stop entire training pipeline
             raise
-        else:
-            pool.close()
-            pool.join()
+        finally:
+            try:
+                pool.close()
+                pool.join()
+            except:
+                pool.terminate()
+                pool.join()
+            # 从全局列表中移除
+            if pool in _global_pools:
+                _global_pools.remove(pool)
             
         # 批量训练
         print(f"[Parallel Self-Play] Training on {len(results)} episodes...")
@@ -576,22 +690,22 @@ class AITrainer:
         self._save_checkpoint()
 
     def curriculum_train(self):
-        """改进的课程学习: 使用科学的奖励整形系统"""
+        """修复后的课程学习: 防止训练退化"""
         # 保存原始环境设置
         original_reward_shaper = getattr(self.env, 'reward_shaper', None)
+        
+        # 初始化防退化机制
+        self.phase_models = {}  # 保存每个阶段的最佳模型
+        self.baseline_performance = []  # 记录每个阶段的基线性能
         
         # 导入新的奖励整形系统
         try:
             from improved_reward_shaping import create_curriculum_phases, HiveRewardShaper
-            phases = create_curriculum_phases()
-            print("[Curriculum] 使用改进的奖励整形系统")
+            phases = self._create_fixed_curriculum_phases()  # 使用修复后的配置
+            print("[Curriculum-Fixed] 使用修复后的奖励整形系统")
         except ImportError:
             print("[Curriculum] 奖励整形系统未找到，使用原有配置")
-            # 基于实际项目复杂度和计算资源的平衡配置
-            # 网络参数: ~140万, 状态空间: 820维, 动作空间: 20000
-            # 优化后训练配置: 确保充分收敛 (~3-4小时训练)
-            from improved_reward_shaping import create_curriculum_phases
-            phases = create_curriculum_phases()
+            phases = self._create_fixed_curriculum_phases()
         
         total_episodes_before = len(self.average_rewards) if self.average_rewards else 0
         total_episodes_target = sum(phase['episodes'] for phase in phases)
@@ -617,6 +731,11 @@ class AITrainer:
             # 设置epsilon参数
             self.player1_ai.epsilon = phase['epsilon_start']
             self.player2_ai.epsilon = phase['epsilon_start']
+            
+            # 检查训练退化
+            degradation_detected = self._check_training_degradation(phase_idx) if phase_idx > 0 else False
+            if degradation_detected:
+                self._apply_degradation_recovery(phase_idx)
             
             # 配置epsilon线性衰减 - 直接在训练循环中管理，不再需要update_epsilon方法
             epsilon_decay_episodes = phase.get('epsilon_decay_episodes', 5000)
@@ -647,24 +766,41 @@ class AITrainer:
                 episodes_after = len(self.average_rewards) if self.average_rewards else 0
                 actual_trained = episodes_after - episodes_before
                 
+                # 保存阶段检查点
+                self._save_phase_checkpoint(phase_idx, phase['name'])
+                
                 print(f"[Curriculum] 阶段 {phase['name']} 完成，实际训练: {actual_trained:,} episodes")
                 print(f"[Curriculum] 最终Epsilon: P1={self.player1_ai.epsilon:.3f}, P2={self.player2_ai.epsilon:.3f}")
                 
             except KeyboardInterrupt:
+                # 强制清理所有进程
+                print(f"\n[Curriculum] 阶段 {phase['name']} 被中断，正在清理进程...")
+                _cleanup_all_processes()
+                
                 # 确保保存当前进度
-                print(f"\n[Curriculum] 阶段 {phase['name']} 被中断，正在保存进度...")
+                print("[Curriculum] 正在保存进度...")
                 self._save_checkpoint()
                 print("[Curriculum] 进度已保存")
                 
+                # 检查是否是连续的Ctrl+C
+                print("\n[Curriculum] 训练已中断")
+                print("选项:")
+                print("  1. 按 Enter 继续当前阶段")
+                print("  2. 输入 'next' 跳到下一阶段")
+                print("  3. 输入 'exit' 完全退出")
+                print("  4. 再次按 Ctrl+C 强制退出")
+                
                 try:
-                    user_choice = input("输入'next'跳到下一阶段，'exit'退出，其他继续: ").strip().lower()
+                    user_choice = input("请选择: ").strip().lower()
                 except (EOFError, KeyboardInterrupt):
                     # 处理连续Ctrl+C或输入中断
-                    print("\n[Curriculum] 检测到强制退出信号")
-                    user_choice = 'exit'
+                    print("\n[Curriculum] 检测到强制退出信号，立即退出")
+                    _cleanup_all_processes()
+                    sys.exit(0)
                 
                 if user_choice == 'exit':
                     print("[Curriculum] 用户选择退出课程学习")
+                    _cleanup_all_processes()
                     break
                 elif user_choice == 'next':
                     print(f"[Curriculum] 跳过阶段 {phase['name']}，进入下一阶段")
@@ -684,14 +820,19 @@ class AITrainer:
                                 curriculum_epsilon_config=phase_epsilon_config  # 传递epsilon配置
                             )
                         except KeyboardInterrupt:
-                            print(f"\n[Curriculum] 阶段 {phase['name']} 二次中断，保存并退出")
+                            print(f"\n[Curriculum] 阶段 {phase['name']} 二次中断，强制退出")
+                            _cleanup_all_processes()
                             self._save_checkpoint()
-                            break
+                            sys.exit(0)
             
             total_episodes_before += phase['episodes']
         
+        print("\n[Curriculum] 课程学习训练完成！")
+        
         # 恢复原始设置并最终保存
         self.env.reward_shaper = original_reward_shaper
+        self._save_checkpoint()
+        print("[Curriculum] 最终模型已保存")
         
         total_episodes_after = len(self.average_rewards) if self.average_rewards else 0
         print(f"\n[Curriculum] 课程学习完成!")
@@ -732,6 +873,140 @@ class AITrainer:
             print(f"[Curriculum] 训练过程中出现异常: {e}")
             self._save_checkpoint()
             raise
+    
+    def _create_fixed_curriculum_phases(self):
+        """
+        创建修复后的课程学习阶段配置 - 防止训练退化
+        
+        主要修复：
+        1. 渐进式奖励权重，避免跳跃变化
+        2. 更保守的epsilon衰减
+        3. 增加各阶段的训练量
+        """
+        try:
+            from improved_reward_shaping import HiveRewardShaper
+        except ImportError:
+            HiveRewardShaper = None
+            
+        return [
+            {
+                'name': 'foundation',
+                'episodes': 35000,  # 增加基础训练量
+                'description': '基础规则学习 - 重点掌握合法动作和基本生存策略',
+                'reward_shaper': HiveRewardShaper('foundation') if HiveRewardShaper else None,
+                'epsilon_start': 0.9,
+                'epsilon_end': 0.75,  # 更保守的衰减，避免过早收敛
+                'epsilon_decay_episodes': 10000,  # 延长衰减时间
+            },
+            {
+                'name': 'strategy',
+                'episodes': 45000,  # 增加策略训练量
+                'description': '战略发展阶段 - 学习攻防平衡和棋子协调',
+                'reward_shaper': HiveRewardShaper('strategy') if HiveRewardShaper else None,
+                'epsilon_start': 0.75,  # 承接上一阶段
+                'epsilon_end': 0.35,   # 更保守的衰减
+                'epsilon_decay_episodes': 15000,
+            },
+            {
+                'name': 'mastery',
+                'episodes': 40000,  # 精通阶段适度训练量
+                'description': '高级策略精通 - 复杂局面处理和深度计算',
+                'reward_shaper': HiveRewardShaper('mastery') if HiveRewardShaper else None,
+                'epsilon_start': 0.35,  # 承接上一阶段
+                'epsilon_end': 0.05,    # 最终保持小量探索
+                'epsilon_decay_episodes': 12000,
+            }
+        ]
+    
+    def _save_phase_checkpoint(self, phase_idx, phase_name):
+        """保存阶段检查点，防止训练退化"""
+        checkpoint_dir = os.path.join(self.model_dir, "phase_checkpoints")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        
+        # 保存模型
+        phase_model_path = os.path.join(checkpoint_dir, f"phase_{phase_idx}_{phase_name}.npz")
+        self.player1_ai.neural_network.save_model(phase_model_path)
+        
+        # 保存性能指标 - 修复类型错误
+        if self.average_rewards and len(self.average_rewards) > 0:
+            avg_reward = np.mean(self.average_rewards[-1000:]) if len(self.average_rewards) >= 1000 else np.mean(self.average_rewards)
+            episode_count = len(self.average_rewards)
+        else:
+            avg_reward = 0.0
+            episode_count = 0
+            
+        phase_performance = {
+            'average_reward': float(avg_reward),
+            'episode_count': episode_count,
+            'epsilon': self.player1_ai.epsilon,
+            'phase_name': phase_name
+        }
+        
+        performance_path = os.path.join(checkpoint_dir, f"phase_{phase_idx}_{phase_name}_performance.json")
+        with open(performance_path, 'w') as f:
+            json.dump(phase_performance, f)
+        
+        if not hasattr(self, 'phase_models'):
+            self.phase_models = {}
+        
+        self.phase_models[phase_idx] = {
+            'model_path': phase_model_path,
+            'performance': phase_performance
+        }
+        
+        print(f"[Phase-Checkpoint] 阶段 {phase_name} 检查点已保存，性能: {phase_performance['average_reward']:.3f}")
+    
+    def _check_training_degradation(self, phase_idx):
+        """检查是否发生训练退化"""
+        if phase_idx == 0 or not self.average_rewards or len(self.average_rewards) < 1000:
+            return False
+            
+        # 获取最近1000个episode的平均性能
+        recent_performance = np.mean(self.average_rewards[-1000:])
+        
+        # 与上一阶段的基线比较
+        if hasattr(self, 'phase_models') and phase_idx - 1 in self.phase_models:
+            baseline_performance = self.phase_models[phase_idx - 1]['performance']['average_reward']
+            
+            # 如果性能下降超过30%，认为发生了退化
+            degradation_threshold = 0.7
+            if recent_performance < baseline_performance * degradation_threshold:
+                print(f"[Degradation-Warning] 检测到训练退化！")
+                print(f"  当前性能: {recent_performance:.3f}")
+                print(f"  基线性能: {baseline_performance:.3f}")
+                print(f"  性能比率: {recent_performance/baseline_performance:.3f}")
+                return True
+        
+        return False
+    
+    def _apply_degradation_recovery(self, phase_idx):
+        """应用训练退化恢复策略"""
+        if not hasattr(self, 'phase_models') or phase_idx - 1 not in self.phase_models:
+            print("[Recovery] 无前一阶段模型，无法恢复")
+            return
+            
+        print("[Recovery] 开始应用训练退化恢复...")
+        
+        # 策略1: 降低学习率
+        current_lr = self.player1_ai.optimizer.param_groups[0]['lr']
+        new_lr = current_lr * 0.5
+        for param_group in self.player1_ai.optimizer.param_groups:
+            param_group['lr'] = new_lr
+        print(f"[Recovery] 学习率从 {current_lr} 降低到 {new_lr}")
+        
+        # 策略2: 增加epsilon，重新探索
+        self.player1_ai.epsilon = min(self.player1_ai.epsilon * 1.5, 0.6)
+        self.player2_ai.epsilon = self.player1_ai.epsilon
+        print(f"[Recovery] Epsilon 提升到 {self.player1_ai.epsilon:.3f}")
+        
+        # 策略3: 清理部分经验池，减少负样本影响
+        if hasattr(self.player1_ai, 'replay_buffer') and len(self.player1_ai.replay_buffer) > 5000:
+            # 保留最近30%的经验
+            keep_size = len(self.player1_ai.replay_buffer) * 3 // 10
+            self.player1_ai.replay_buffer = self.player1_ai.replay_buffer[-keep_size:]
+            print(f"[Recovery] 经验池大小缩减到 {keep_size}")
+        
+        print("[Recovery] 恢复策略已应用")
 
 
 
