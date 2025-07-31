@@ -9,6 +9,7 @@ import time
 import signal
 import sys
 import atexit
+import queue
 from hive_env import HiveEnv
 from ai_player import AIPlayer
 from game import Game
@@ -133,9 +134,9 @@ def _signal_handler(signum, frame):
     print("[Signal] 清理完成，退出程序")
     sys.exit(0)
 
-# 注册信号处理器
-signal.signal(signal.SIGINT, _signal_handler)
-signal.signal(signal.SIGTERM, _signal_handler)
+# 注册信号处理器 - 但不在模块加载时立即激活
+# signal.signal(signal.SIGINT, _signal_handler)  # 注释掉，避免冲突
+# signal.signal(signal.SIGTERM, _signal_handler)
 
 class AITrainer:
     def __init__(self, model_path=None, force_new=False, custom_dir=None, custom_prefix=None, use_dlc=False):
@@ -288,18 +289,28 @@ class AITrainer:
         try:
             while episode < max_episodes and workers_alive > 0:
                 try:
-                    # 从队列收集worker采样结果 - 添加超时避免无限等待
-                    sample = queue.get(timeout=30)  # 30秒超时
+                    # 从队列收集worker采样结果 - 减少超时时间，增加诊断信息
+                    sample = queue.get(timeout=5)  # 减少到5秒超时
                     samples_received += 1
-                except:
+                except mp.TimeoutError:
                     # 检查worker状态
-                    alive_count = sum(1 for w in workers if w.is_alive())
+                    alive_workers = [w for w in workers if w.is_alive()]
+                    alive_count = len(alive_workers)
+                    
                     if alive_count == 0:
                         print("所有worker已退出，结束训练")
                         break
+                    elif samples_received == 0 and episode == self.start_episode:
+                        # 训练刚开始，worker可能还没有产生数据
+                        print(f"[Debug] 等待worker产生数据，存活worker: {alive_count}")
+                        continue
                     else:
                         print(f"队列超时，当前存活worker: {alive_count}")
+                        # 不要在这里直接break，给worker更多时间
                         continue
+                except Exception as e:
+                    print(f"[Error] 队列读取异常: {e}")
+                    break
                 
                 # sample应包含: obs, action, reward, next_obs, terminated, episode_reward, episode_steps, illegal_count, queenbee_step, info
                 try:
@@ -421,6 +432,10 @@ class AITrainer:
                     if episode % 10 == 0:  # 每10个episode保存一次，减少IO开销
                         reward_file = os.path.join(self.model_dir, f"{self.run_prefix}_reward_history.npy")
                         np.save(reward_file, np.array(self.average_rewards))
+                        
+                        # 同时保存步数数据，供监控器实时读取
+                        steps_file = os.path.join(self.model_dir, f"{self.run_prefix}_steps_history.npy")
+                        np.save(steps_file, np.array(self.episode_steps_history))
                     
                     # Epsilon管理：课程学习优先，否则使用简单衰减
                     old_epsilon = self.player1_ai.epsilon
@@ -782,48 +797,9 @@ class AITrainer:
                 self._save_checkpoint()
                 print("[Curriculum] 进度已保存")
                 
-                # 检查是否是连续的Ctrl+C
-                print("\n[Curriculum] 训练已中断")
-                print("选项:")
-                print("  1. 按 Enter 继续当前阶段")
-                print("  2. 输入 'next' 跳到下一阶段")
-                print("  3. 输入 'exit' 完全退出")
-                print("  4. 再次按 Ctrl+C 强制退出")
-                
-                try:
-                    user_choice = input("请选择: ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    # 处理连续Ctrl+C或输入中断
-                    print("\n[Curriculum] 检测到强制退出信号，立即退出")
-                    _cleanup_all_processes()
-                    sys.exit(0)
-                
-                if user_choice == 'exit':
-                    print("[Curriculum] 用户选择退出课程学习")
-                    _cleanup_all_processes()
-                    break
-                elif user_choice == 'next':
-                    print(f"[Curriculum] 跳过阶段 {phase['name']}，进入下一阶段")
-                    continue
-                else:
-                    print(f"[Curriculum] 继续阶段 {phase['name']}")
-                    # 计算剩余episodes继续训练
-                    episodes_after = len(self.average_rewards) if self.average_rewards else 0
-                    remaining = phase['episodes'] - (episodes_after - episodes_before)
-                    if remaining > 0:
-                        try:
-                            self.train(
-                                max_episodes=remaining, 
-                                num_workers=10,
-                                epsilon_decay=1.0,  # 禁用内部epsilon衰减
-                                min_epsilon=0.0,
-                                curriculum_epsilon_config=phase_epsilon_config  # 传递epsilon配置
-                            )
-                        except KeyboardInterrupt:
-                            print(f"\n[Curriculum] 阶段 {phase['name']} 二次中断，强制退出")
-                            _cleanup_all_processes()
-                            self._save_checkpoint()
-                            sys.exit(0)
+                # 简化处理 - 直接退出，避免用户交互导致的循环
+                print(f"[Curriculum] 用户中断训练，退出课程学习")
+                break
             
             total_episodes_before += phase['episodes']
         

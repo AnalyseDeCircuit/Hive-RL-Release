@@ -1,6 +1,7 @@
 import multiprocessing as mp
 import signal
 import sys
+import os
 from hive_env import HiveEnv, Action
 from ai_player import AIPlayer
 import numpy as np
@@ -8,9 +9,12 @@ import numpy as np
 def worker_process(queue, player_args, env_args, episode_per_worker=1, reward_shaper_config=None, epsilon_sync_queue=None):
     """Worker进程函数，增强信号处理"""
     
+    worker_id = os.getpid()
+    print(f"[Worker-{worker_id}] 启动，目标episodes: {episode_per_worker}")
+    
     # 设置信号处理 - worker进程忽略SIGINT，让主进程处理
     def signal_handler(signum, frame):
-        print(f"[Worker] 收到信号 {signum}，正在优雅退出...")
+        print(f"[Worker-{worker_id}] 收到信号 {signum}，正在优雅退出...")
         sys.exit(0)
     
     signal.signal(signal.SIGINT, signal_handler)
@@ -27,9 +31,9 @@ def worker_process(queue, player_args, env_args, episode_per_worker=1, reward_sh
                 from improved_reward_shaping import HiveRewardShaper
                 phase = reward_shaper_config.get('phase', 'foundation')
                 env.reward_shaper = HiveRewardShaper(phase)
-                print(f"[Worker] 成功加载奖励整形器: {phase}")
+                print(f"[Worker-{worker_id}] 成功加载奖励整形器: {phase}")
             except ImportError:
-                print("[Worker] 奖励整形模块未找到，使用原始奖励")
+                print(f"[Worker-{worker_id}] 奖励整形模块未找到，使用原始奖励")
         
         # 如果传入 shaping_func，则包装 step (向后兼容)
         if shaping_func is not None:
@@ -39,6 +43,8 @@ def worker_process(queue, player_args, env_args, episode_per_worker=1, reward_sh
                 return obs, shaping_func(reward, terminated), terminated, truncated, info
             env.step = shaped_step
         ai = AIPlayer(**player_args)
+        
+        print(f"[Worker-{worker_id}] 初始化完成，开始训练")
         
         # 修复：添加episode计数器限制，防止无限循环
         episode_count = 0
@@ -53,17 +59,17 @@ def worker_process(queue, player_args, env_args, episode_per_worker=1, reward_sh
                 except:
                     # 队列为空，继续使用当前epsilon
                     pass
-        
-        obs, info = env.reset()
-        terminated = False
-        truncated = False
-        episode_reward = 0.0
-        episode_steps = 0
-        illegal_action_count = 0
-        queenbee_step = -1
-        current_player_idx = env.current_player_idx
-        
-        while not terminated and not truncated:
+            
+            obs, info = env.reset()
+            terminated = False
+            truncated = False
+            episode_reward = 0.0
+            episode_steps = 0
+            illegal_action_count = 0
+            queenbee_step = -1
+            current_player_idx = env.current_player_idx
+            
+            while not terminated and not truncated:
                 legal_actions = env.get_legal_actions()
                 # ---蜂后未落兜底---
                 if not legal_actions:
@@ -104,12 +110,18 @@ def worker_process(queue, player_args, env_args, episode_per_worker=1, reward_sh
                 # 同时，worker不进行训练，训练留给主进程统一处理
                 if terminated or truncated:
                     # put 10元组，只在episode结束时发送
-                    queue.put((obs, action, reward, next_obs, terminated, episode_reward, episode_steps, illegal_action_count, queenbee_step, info))
+                    try:
+                        queue.put((obs, action, reward, next_obs, terminated, episode_reward, episode_steps, illegal_action_count, queenbee_step, info))
+                        print(f"[Worker-{worker_id}] Episode {episode_count+1} 完成: reward={episode_reward:.3f}, steps={episode_steps}")
+                    except Exception as e:
+                        print(f"[Worker-{worker_id}] 发送数据失败: {e}")
                 
                 obs = next_obs
+            
+            # 完成一个episode，增加计数器
+            episode_count += 1
         
-        # 完成一个episode，增加计数器
-        episode_count += 1
+        print(f"[Worker-{worker_id}] 完成所有 {episode_per_worker} episodes，正常退出")
     
     except Exception as e:
         print(f"[Worker] 发生异常: {e}")

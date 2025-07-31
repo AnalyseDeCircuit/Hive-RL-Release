@@ -15,23 +15,24 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-# 兼容中文
+# Setup matplotlib for English display to avoid font issues
 import matplotlib
-matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'Microsoft YaHei', 'sans-serif']
+matplotlib.rcParams['font.family'] = ['DejaVu Sans', 'Arial', 'sans-serif']
 matplotlib.rcParams['axes.unicode_minus'] = False
 
 class SimpleRealTimeMonitor:
-    """简化的实时监控器"""
+    """Simple Real-time Monitor"""
     
     def __init__(self, update_interval=5):
         self.update_interval = update_interval
         self.rewards = []
         self.episodes = []
         self.moving_avg = []
+        self.episode_steps = []  # 新增：每局步数
         self.last_update = 0
         
     def find_latest_reward_file(self):
-        """查找最新的奖励文件"""
+        """Find latest reward file"""
         patterns = [
             "models/*/DQN_reward_history.npy",
             "models/*/*_reward_history.npy", 
@@ -42,39 +43,39 @@ class SimpleRealTimeMonitor:
         for pattern in patterns:
             files = glob.glob(pattern)
             if files:
-                # 按修改时间排序，取最新的
+                # Sort by modification time, take the latest
                 files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-                print(f"[Monitor] 找到奖励文件: {files[0]}")
+                print(f"[Monitor] Found reward file: {files[0]}")
                 return files[0]
         
-        print("[Monitor] 未找到奖励文件，支持的文件模式:")
+        print("[Monitor] No reward file found, supported file patterns:")
         for pattern in patterns:
             print(f"  - {pattern}")
         return None
     
     def load_data(self):
-        """加载训练数据"""
+        """Load training data"""
         reward_file = self.find_latest_reward_file()
         if not reward_file:
             return False
             
         try:
-            # 检查文件是否更新
+            # Check if file is updated
             mtime = os.path.getmtime(reward_file)
             if mtime <= self.last_update:
                 return False
                 
             self.last_update = mtime
             
-            # 加载数据
+            # Load data
             rewards = np.load(reward_file)
             if len(rewards) == len(self.rewards):
-                return False  # 没有新数据
+                return False  # No new data
                 
             self.rewards = rewards.tolist()
             self.episodes = list(range(1, len(self.rewards) + 1))
             
-            # 计算移动平均
+            # Calculate moving average
             window = min(50, len(self.rewards))
             if len(self.rewards) >= window:
                 self.moving_avg = []
@@ -83,30 +84,40 @@ class SimpleRealTimeMonitor:
                     avg = np.mean(self.rewards[start_idx:i+1])
                     self.moving_avg.append(avg)
             
-            print(f"[Monitor] 数据已更新: {len(self.rewards)} episodes, 最新奖励: {self.rewards[-1]:.3f}")
+            # 尝试加载步数数据
+            steps_file = reward_file.replace('_reward_history.npy', '_steps_history.npy')
+            if os.path.exists(steps_file):
+                try:
+                    steps_data = np.load(steps_file)
+                    if len(steps_data) == len(self.rewards):
+                        self.episode_steps = steps_data.tolist()
+                except Exception as e:
+                    print(f"[Monitor] Failed to load steps data: {e}")
+            
+            print(f"[Monitor] Data updated: {len(self.rewards)} episodes, latest reward: {self.rewards[-1]:.3f}")
             return True
             
         except Exception as e:
-            print(f"[Monitor] 加载数据失败: {e}")
+            print(f"[Monitor] Failed to load data: {e}")
             return False
     
     def setup_plot(self):
-        """设置图表"""
-        plt.ion()  # 开启交互模式
+        """Setup plots"""
+        plt.ion()  # Enable interactive mode
         self.fig, (self.ax1, self.ax2) = plt.subplots(2, 1, figsize=(12, 8))
-        self.fig.suptitle('Hive-RL 实时训练监控', fontsize=14, fontweight='bold')
+        self.fig.suptitle('Hive-RL Real-time Training Monitor', fontsize=14, fontweight='bold')
         
-        # 奖励曲线
-        self.ax1.set_title('奖励曲线')
+        # Reward curve
+        self.ax1.set_title('Reward Curve')
         self.ax1.set_xlabel('Episode')
         self.ax1.set_ylabel('Reward')
         self.ax1.grid(True, alpha=0.3)
-        self.line1, = self.ax1.plot([], [], 'b-', alpha=0.5, label='原始奖励')
-        self.line2, = self.ax1.plot([], [], 'r-', linewidth=2, label='移动平均(50)')
+        self.line1, = self.ax1.plot([], [], 'b-', alpha=0.5, label='Raw Reward')
+        self.line2, = self.ax1.plot([], [], 'r-', linewidth=2, label='Moving Avg (50)')
         self.ax1.legend()
         
-        # 统计信息
-        self.ax2.set_title('训练统计')
+        # Statistics
+        self.ax2.set_title('Training Statistics')
         self.ax2.axis('off')
         self.stats_text = self.ax2.text(0.1, 0.9, '', fontsize=11, verticalalignment='top',
                                        bbox=dict(boxstyle="round,pad=0.3", facecolor="lightblue", alpha=0.5))
@@ -114,31 +125,31 @@ class SimpleRealTimeMonitor:
         plt.tight_layout()
         
     def update_plot(self):
-        """更新图表"""
+        """Update plots"""
         if not self.episodes:
             return
             
-        # 更新奖励曲线
+        # Update reward curve
         self.line1.set_data(self.episodes, self.rewards)
         if self.moving_avg:
             self.line2.set_data(self.episodes, self.moving_avg)
         
-        # 自动调整范围
+        # Auto-adjust range
         if self.rewards:
             self.ax1.set_xlim(0, max(len(self.episodes), 100))
             y_min, y_max = min(self.rewards), max(self.rewards)
             y_range = y_max - y_min if y_max != y_min else 1
             self.ax1.set_ylim(y_min - y_range * 0.1, y_max + y_range * 0.1)
         
-        # 更新统计信息
+        # Update statistics
         self.update_stats()
         
-        # 刷新显示
+        # Refresh display
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
     
     def update_stats(self):
-        """更新统计信息"""
+        """Update statistics"""
         if not self.rewards:
             return
             
@@ -151,78 +162,93 @@ class SimpleRealTimeMonitor:
         best_reward = max(self.rewards)
         worst_reward = min(self.rewards)
         
-        stats_text = f"""训练进度统计
+        # 计算每局平均步数
+        avg_steps = "N/A"
+        max_steps = "N/A"
+        min_steps = "N/A"
+        if self.episode_steps:
+            recent_steps = self.episode_steps[-recent_count:]
+            avg_steps = f"{np.mean(recent_steps):.1f}"
+            max_steps = f"{max(recent_steps):.0f}"
+            min_steps = f"{min(recent_steps):.0f}"
+        
+        stats_text = f"""Training Progress Statistics
 
-总Episodes: {total_episodes:,}
+Total Episodes: {total_episodes:,}
 
-奖励统计 (最近{recent_count}局):
-  当前: {current_reward:.3f}
-  平均: {avg_reward:.3f}
-  最佳: {best_reward:.3f}
-  最差: {worst_reward:.3f}
+Reward Statistics (Recent {recent_count} episodes):
+  Current: {current_reward:.3f}
+  Average: {avg_reward:.3f}
+  Best: {best_reward:.3f}
+  Worst: {worst_reward:.3f}
 
-使用提示:
-  - 关闭窗口退出监控
-  - 每{self.update_interval}秒自动更新
-  - 数据来源: 最新训练文件"""
+Episode Steps (Recent {recent_count} episodes):
+  Average: {avg_steps}
+  Max: {max_steps}
+  Min: {min_steps}
+
+Usage Tips:
+  - Close window to exit monitor
+  - Auto-update every {self.update_interval} seconds
+  - Data source: Latest training files"""
         
         self.stats_text.set_text(stats_text)
     
     def start(self):
-        """开始监控"""
-        print("🚀 启动Hive-RL实时训练监控...")
-        print("📁 查找训练文件...")
+        """Start monitoring"""
+        print("🚀 Starting Hive-RL Real-time Training Monitor...")
+        print("📁 Looking for training files...")
         
-        # 检查是否有训练数据
+        # Check if training data exists
         if not self.find_latest_reward_file():
-            print("❌ 未找到训练数据文件！")
-            print("请确保:")
-            print("  1. 已开始AI训练")
-            print("  2. models/目录下有*_reward_history.npy文件")
+            print("❌ No training data files found!")
+            print("Please ensure:")
+            print("  1. AI training has started")
+            print("  2. models/ directory contains *_reward_history.npy files")
             return
         
-        print("✅ 找到训练数据，设置监控界面...")
+        print("✅ Found training data, setting up monitoring interface...")
         
-        # 设置图表
+        # Setup charts
         self.setup_plot()
         
-        # 初始加载
+        # Initial load
         if self.load_data():
             self.update_plot()
         
-        print("📊 监控界面已启动")
-        print(f"🔄 每{self.update_interval}秒自动更新")
-        print("💡 关闭图表窗口可退出监控")
+        print("📊 Monitoring interface launched")
+        print(f"🔄 Auto-update every {self.update_interval} seconds")
+        print("💡 Close chart window to exit monitor")
         
-        # 主循环
+        # Main loop
         try:
-            while plt.get_fignums():  # 检查窗口是否还在
+            while plt.get_fignums():  # Check if window is still open
                 if self.load_data():
                     self.update_plot()
-                    print(f"📈 数据已更新 (Episodes: {len(self.episodes)})")
+                    print(f"📈 Data updated (Episodes: {len(self.episodes)})")
                 
-                # 等待更新间隔
+                # Wait for update interval
                 plt.pause(self.update_interval)
                 
         except KeyboardInterrupt:
-            print("\n⏹️ 用户中断，退出监控")
+            print("\n⏹️ User interrupted, exiting monitor")
         except Exception as e:
-            print(f"❌ 监控过程中出错: {e}")
+            print(f"❌ Error during monitoring: {e}")
         finally:
             plt.close('all')
-            print("👋 监控已退出")
+            print("👋 Monitor exited")
 
 
 def main():
-    """主函数"""
+    """Main function"""
     print("=" * 50)
-    print("🎮 Hive-RL 实时训练监控工具")
+    print("🎮 Hive-RL Real-time Training Monitor")
     print("=" * 50)
     
-    # 创建监控器
+    # Create monitor
     monitor = SimpleRealTimeMonitor(update_interval=5)
     
-    # 开始监控
+    # Start monitoring
     monitor.start()
 
 

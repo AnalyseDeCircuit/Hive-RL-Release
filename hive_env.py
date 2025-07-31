@@ -224,7 +224,8 @@ class HiveEnv(gym.Env):
             count = current_player.piece_count.get(pt_id, 0)
             placed = max_count - count
             total_placed += placed
-        must_place_queen = (not current_player.is_queen_bee_placed) and (total_placed >= 3)
+        # 修复：使用正确的蜂后放置检查逻辑 - 基于回合数而不是放置数量
+        must_place_queen = (self.turn_count == 3 and not current_player.is_queen_bee_placed)
         if must_place_queen and (action_type != 'place' or piece_type_id != 0):
             print(f"[DEBUG][step][保险] 必须落蜂后但选了非蜂后动作: action={action}, turn={self.turn_count}, player={self.current_player_idx}")
             # 极其严重的惩罚，确保AI强制学会这个规则
@@ -495,7 +496,8 @@ class HiveEnv(gym.Env):
             count = current_player.piece_count.get(pt_id, 0)
             placed = max_count - count
             total_placed += placed
-        must_place_queen = (not queen_placed) and (total_placed >= 3)
+        # 修复：使用正确的蜂后放置检查逻辑 - 基于回合数而不是放置数量
+        must_place_queen = (self.turn_count == 3 and not current_player.is_queen_bee_placed)
         # ---numba加速生成静态放置动作---
         board_arr = board_to_numpy(self.board, BOARD_SIZE, len(PIECE_TYPE_LIST))
         # 构造piece_counts数组
